@@ -3,9 +3,13 @@
   "version": "0.0.1",
   "description": "LLM-powered knowledge base. Drop documents, build a wiki, ask questions. Inspired by Karpathy.",
   "bin": {
-    "llm-kb": "./bin/cli.mjs"
+    "llm-kb": "./bin/cli.js"
   },
   "type": "module",
+  "scripts": {
+    "build": "tsup src/cli.ts --format esm --out-dir bin --clean",
+    "dev": "tsup src/cli.ts --format esm --out-dir bin --watch"
+  },
   "keywords": [
     "llm",
     "knowledge-base",
@@ -20,5 +24,13 @@
   "repository": {
     "type": "git",
     "url": "https://github.com/satish860/llm-kb"
+  },
+  "dependencies": {
+    "@llamaindex/liteparse": "^1.4.4",
+    "commander": "^13.1.0"
+  },
+  "devDependencies": {
+    "tsup": "^8.4.0",
+    "typescript": "^5.8.3"
   }
 }
