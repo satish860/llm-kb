@@ -17,7 +17,13 @@ export async function parsePDF(
   const name = basename(pdfPath, ".pdf");
   await mkdir(outputDir, { recursive: true });
 
-  const parser = new LiteParse({ ocrEnabled: false, outputFormat: "json" });
+  const ocrServerUrl = process.env.OCR_SERVER_URL;
+
+  const parser = new LiteParse({
+    ocrEnabled: true,
+    outputFormat: "json",
+    ...(ocrServerUrl ? { ocrServerUrl } : {}),
+  });
   const result = await parser.parse(pdfPath, true);
 
   // Build markdown — spatial text per page
