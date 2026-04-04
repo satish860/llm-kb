@@ -15,14 +15,14 @@ const program = new Command();
 program
   .name("llm-kb")
   .description("Drop files into a folder. Get a knowledge base you can query.")
-  .version("0.0.1");
+  .version("0.1.0");
 
 program
   .command("run")
   .description("Scan, parse, index, and watch a folder")
   .argument("<folder>", "Path to your documents folder")
   .action(async (folder: string) => {
-    console.log(`\n${chalk.bold("llm-kb")} v0.0.1\n`);
+    console.log(`\n${chalk.bold("llm-kb")} v0.1.0\n`);
 
     if (!existsSync(folder)) {
       console.error(chalk.red(`Error: Folder not found: ${folder}`));
