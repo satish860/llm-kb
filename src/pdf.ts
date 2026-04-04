@@ -1,5 +1,5 @@
 import { LiteParse } from "@llamaindex/liteparse";
-import { writeFile, mkdir } from "node:fs/promises";
+import { writeFile, mkdir, stat } from "node:fs/promises";
 import { join, basename } from "node:path";
 import { cpus } from "node:os";
 
@@ -9,6 +9,39 @@ export interface ParsedPDF {
   jsonPath: string;
   totalPages: number;
   textLength: number;
+  skipped: boolean;
+}
+
+/**
+ * Check if source PDF is newer than the parsed output.
+ * Returns true if we can skip parsing.
+ */
+async function isUpToDate(
+  pdfPath: string,
+  mdPath: string,
+  jsonPath: string
+): Promise<boolean> {
+  try {
+    const [pdfStat, mdStat, jsonStat] = await Promise.all([
+      stat(pdfPath),
+      stat(mdPath),
+      stat(jsonPath),
+    ]);
+    return pdfStat.mtimeMs <= mdStat.mtimeMs && pdfStat.mtimeMs <= jsonStat.mtimeMs;
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * Suppress stderr temporarily to hide noisy library warnings.
+ */
+function suppressStderr(): () => void {
+  const originalWrite = process.stderr.write.bind(process.stderr);
+  process.stderr.write = (() => true) as any;
+  return () => {
+    process.stderr.write = originalWrite;
+  };
 }
 
 export async function parsePDF(
@@ -18,8 +51,16 @@ export async function parsePDF(
   const name = basename(pdfPath, ".pdf");
   await mkdir(outputDir, { recursive: true });
 
+  const mdPath = join(outputDir, `${name}.md`);
+  const jsonPath = join(outputDir, `${name}.json`);
+
+  // Skip if already parsed and source hasn't changed
+  if (await isUpToDate(pdfPath, mdPath, jsonPath)) {
+    return { name, mdPath, jsonPath, totalPages: 0, textLength: 0, skipped: true };
+  }
+
   const ocrServerUrl = process.env.OCR_SERVER_URL;
-  const ocrEnabled = ocrServerUrl ? true : (process.env.OCR_ENABLED === "true");  
+  const ocrEnabled = ocrServerUrl ? true : process.env.OCR_ENABLED === "true";
 
   const parser = new LiteParse({
     ocrEnabled,
@@ -27,7 +68,15 @@ export async function parsePDF(
     numWorkers: cpus().length,
     ...(ocrServerUrl ? { ocrServerUrl } : {}),
   });
-  const result = await parser.parse(pdfPath, true);
+
+  // Suppress noisy Tesseract/PDF.js warnings during parse
+  const restore = suppressStderr();
+  let result;
+  try {
+    result = await parser.parse(pdfPath, true);
+  } finally {
+    restore();
+  }
 
   // Build markdown — spatial text per page
   const markdown = result.pages
@@ -56,9 +105,6 @@ export async function parsePDF(
     })),
   };
 
-  const mdPath = join(outputDir, `${name}.md`);
-  const jsonPath = join(outputDir, `${name}.json`);
-
   await writeFile(mdPath, markdown);
   await writeFile(jsonPath, JSON.stringify(bboxData, null, 2));
 
@@ -68,5 +114,6 @@ export async function parsePDF(
     jsonPath,
     totalPages: result.pages.length,
     textLength: markdown.length,
+    skipped: false,
   };
 }
