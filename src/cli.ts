@@ -3,6 +3,7 @@
 import { Command } from "commander";
 import { scan, summarize } from "./scan.js";
 import { parsePDF } from "./pdf.js";
+import { buildIndex } from "./indexer.js";
 import { existsSync } from "node:fs";
 import { mkdir } from "node:fs/promises";
 import { resolve, join } from "node:path";
@@ -85,6 +86,15 @@ program
     // Show errors
     for (const err of errors) {
       console.log(chalk.red(`    ✗ ${err.name} — ${err.message}`));
+    }
+
+    // Build index
+    console.log(`\n  Building index...`);
+    try {
+      await buildIndex(root, sourcesDir);
+      console.log(chalk.green(`  Index built: .llm-kb/wiki/index.md`));
+    } catch (err: any) {
+      console.error(chalk.red(`  Index failed: ${err.message}`));
     }
 
     console.log(`\n  ${chalk.dim("Output:")} ${sourcesDir}`);

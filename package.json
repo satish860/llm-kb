@@ -27,8 +27,12 @@
   },
   "dependencies": {
     "@llamaindex/liteparse": "^1.4.4",
+    "@mariozechner/pi-coding-agent": "^0.65.0",
     "chalk": "^5.6.2",
     "commander": "^13.1.0",
+    "exceljs": "^4.4.0",
+    "mammoth": "^1.12.0",
+    "officeparser": "^6.0.7",
     "ora": "^9.3.0"
   },
   "devDependencies": {

@@ -39,7 +39,7 @@
 **Do:** Add progress bar for parsing. Handle corrupt/encrypted PDFs gracefully (skip + warn). Handle unsupported file types (skip + warn).
 **Success Criteria:** Run against 10+ files. See progress. Throw a bad PDF in. It doesn't crash.
 **Checkpoint:** Does the terminal output match what the spec envisions?
-**Status:** ⬜ Not started
+**Status:** ✅ Done
 
 ---
 
