@@ -219,7 +219,14 @@ Minimal. Four panels:
 └───────────────┴────────────────────────────────────┘
 ```
 
-**Built with:** Next.js App Router + Vercel AI SDK streaming. Same chat route pattern as [HerculesV2](https://github.com/satish860/HerculesV2/blob/main/app/api/chat/route.ts) — Pi SDK session management, streaming protocol, TTL cleanup.
+**Built with:** Next.js App Router + Vercel AI SDK streaming. Forked directly from [HerculesV2](https://github.com/satish860/HerculesV2). We take:
+
+- `app/api/chat/route.ts` — Pi SDK session management, Vercel AI streaming protocol, secret scrubbing, TTL cleanup
+- `lib/store.ts` — session store with `globalThis` for hot reload survival
+- `components.json` + Tailwind setup — shadcn/ui base
+- `Dockerfile` — multi-stage build with `data/` volume
+
+We remove: Salesforce integration, aviation skills, cron jobs, agent marketplace. We add: file upload drop zone, sources sidebar, activity feed, mode switching (query/research/lint/eval).
 
 **Modes:**
 - **Query** — read-only. Answer in chat.
