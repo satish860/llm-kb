@@ -17,6 +17,7 @@ import { updateWiki } from "./wiki-updater.js";
 import { join, basename } from "node:path";
 import chalk from "chalk";
 import { getNodeModulesPath } from "./utils.js";
+import { MarkdownStream } from "./md-stream.js";
 
 function extractAnswerText(content: any[]): string {
   return (content ?? [])
@@ -145,6 +146,7 @@ function subscribeDisplay(
   let filesReadCount = 0;
   let shownToolCalls = new Set<string>();
   let startTime = Date.now();
+  let md = new MarkdownStream(process.stdout.isTTY ?? false);
 
   // Wiki update scheduler — persistent across prompts
   const scheduler = new WikiUpdateScheduler(5, 3);
@@ -188,6 +190,7 @@ function subscribeDisplay(
       filesReadCount = 0;
       shownToolCalls = new Set();
       startTime = Date.now();
+      md = new MarkdownStream(process.stdout.isTTY ?? false);
     }
 
     // ═══ 1. Model header ═════════════════════════════════════════════════
@@ -244,7 +247,7 @@ function subscribeDisplay(
       }
     }
 
-    // ═══ 4. Answer ═══════════════════════════════════════════════════════
+    // ═══ 4. Answer (with markdown rendering) ═══════════════════════════════
     if (event.type === "message_update") {
       const ae = event.assistantMessageEvent;
       if (ae.type === "text_start" && phase !== "answer") {
@@ -254,7 +257,10 @@ function subscribeDisplay(
         phase = "answer";
       }
       if (ae.type === "text_delta") {
-        process.stdout.write(ae.delta);
+        process.stdout.write(md.push(ae.delta));
+      }
+      if (ae.type === "text_end") {
+        process.stdout.write(md.end());
       }
     }
 
