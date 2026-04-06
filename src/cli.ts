@@ -7,7 +7,7 @@ import { buildIndex } from "./indexer.js";
 import { startWatcher } from "./watcher.js";
 import { startSessionWatcher } from "./session-watcher.js";
 import { query, createChat } from "./query.js";
-// compiler.ts kept for eval-driven compilation (Phase 4, Slice 4)
+import { runEval } from "./eval.js";
 import { ChatDisplay } from "./tui-display.js";
 import { resolveKnowledgeBase } from "./resolve-kb.js";
 import { checkAuth, exitWithAuthError } from "./auth.js";
@@ -168,6 +168,45 @@ program
       console.error(chalk.red(err.message));
       process.exit(1);
     }
+  });
+
+program
+  .command("eval")
+  .description("Analyze sessions for quality issues, wiki gaps, and performance")
+  .option("--folder <path>", "Path to document folder (auto-detects if omitted)")
+  .option("--last <n>", "Only check last N sessions", parseInt)
+  .action(async (options: { folder?: string; last?: number }) => {
+    const auth = checkAuth();
+    if (!auth.ok) exitWithAuthError();
+
+    const root = resolveKnowledgeBase(options.folder || process.cwd());
+    if (!root) {
+      console.error(chalk.red("No knowledge base found. Run 'llm-kb run <folder>' first."));
+      process.exit(1);
+    }
+
+    console.log(`\n${chalk.bold("llm-kb eval")}\n`);
+
+    const result = await runEval(root, {
+      authStorage: auth.authStorage,
+      last: options.last,
+      onProgress: (msg) => console.log(chalk.dim(`  ${msg}`)),
+    });
+
+    const { metrics, issues, wikiGaps } = result;
+    const errors = issues.filter((i) => i.severity === "error").length;
+    const warnings = issues.filter((i) => i.severity === "warning").length;
+
+    console.log();
+    console.log(`  ${chalk.bold("Results:")}`);
+    console.log(`  Queries analyzed:  ${metrics.totalQAs}`);
+    console.log(`  Wiki hit rate:     ${metrics.totalQAs > 0 ? Math.round(metrics.wikiHits / metrics.totalQAs * 100) : 0}%`);
+    console.log(`  Wasted reads:      ${metrics.wastedReads}`);
+    console.log(`  Issues:            ${errors > 0 ? chalk.red(`${errors} errors`) : chalk.green("0 errors")}  ${warnings > 0 ? chalk.yellow(`${warnings} warnings`) : chalk.dim("0 warnings")}`);
+    console.log(`  Wiki gaps:         ${wikiGaps.length > 0 ? chalk.yellow(String(wikiGaps.length)) : chalk.green("0")}`);
+    console.log();
+    console.log(chalk.green(`  Report: .llm-kb/wiki/outputs/eval-report.md`));
+    console.log();
   });
 
 program
