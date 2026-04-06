@@ -1,6 +1,6 @@
 {
   "name": "llm-kb",
-  "version": "0.2.0",
+  "version": "0.3.0",
   "description": "LLM-powered knowledge base. Drop documents, build a wiki, ask questions. Inspired by Karpathy.",
   "bin": {
     "llm-kb": "./bin/cli.js"
