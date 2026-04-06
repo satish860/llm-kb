@@ -11,7 +11,7 @@ import type { AgentSession } from "@mariozechner/pi-coding-agent";
 import { getModels } from "@mariozechner/pi-ai";
 import { readdir, mkdir, readFile } from "node:fs/promises";
 import { existsSync } from "node:fs";
-import { createKBSession } from "./session-store.js";
+import { createKBSession, continueKBSession } from "./session-store.js";
 import { saveTrace, appendToQueryLog, KBTrace } from "./trace-builder.js";
 import { updateWiki } from "./wiki-updater.js";
 import { join, dirname, basename } from "node:path";
@@ -401,7 +401,9 @@ export async function createChat(
     cwd: folder,
     resourceLoader: loader,
     tools,
-    sessionManager: await createKBSession(folder),
+    sessionManager: options.save
+      ? await createKBSession(folder)   // --save = fresh session
+      : await continueKBSession(folder), // chat = continue last session
     settingsManager: SettingsManager.inMemory({
       compaction: { enabled: false },
     }),

@@ -3,9 +3,17 @@ import { mkdir } from "node:fs/promises";
 import { join } from "node:path";
 
 /**
- * Create a file-based SessionManager for a KB folder.
- * Sessions are stored under .llm-kb/sessions/ so they act as
- * an automatic transaction log for all agent activity.
+ * Continue the most recent session, or create a new one if none exists.
+ * Sessions persist in .llm-kb/sessions/ — conversation history survives restarts.
+ */
+export async function continueKBSession(kbRoot: string): Promise<SessionManager> {
+  const sessionDir = join(kbRoot, ".llm-kb", "sessions");
+  await mkdir(sessionDir, { recursive: true });
+  return SessionManager.continueRecent(kbRoot, sessionDir);
+}
+
+/**
+ * Always create a fresh session (for one-shot `llm-kb query` or indexing).
  */
 export async function createKBSession(kbRoot: string): Promise<SessionManager> {
   const sessionDir = join(kbRoot, ".llm-kb", "sessions");

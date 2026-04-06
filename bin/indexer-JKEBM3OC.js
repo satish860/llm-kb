@@ -1,6 +1,6 @@
 import {
   buildIndex
-} from "./chunk-XYZZN6Z2.js";
+} from "./chunk-BNYLS3UY.js";
 import "./chunk-3YMNGUZZ.js";
 import "./chunk-LDHOKBJA.js";
 import "./chunk-5PYKQQLA.js";

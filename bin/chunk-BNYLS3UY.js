@@ -7119,6 +7119,11 @@ import { readdir, readFile } from "fs/promises";
 import { SessionManager } from "@mariozechner/pi-coding-agent";
 import { mkdir } from "fs/promises";
 import { join } from "path";
+async function continueKBSession(kbRoot) {
+  const sessionDir = join(kbRoot, ".llm-kb", "sessions");
+  await mkdir(sessionDir, { recursive: true });
+  return SessionManager.continueRecent(kbRoot, sessionDir);
+}
 async function createKBSession(kbRoot) {
   const sessionDir = join(kbRoot, ".llm-kb", "sessions");
   await mkdir(sessionDir, { recursive: true });
@@ -7236,6 +7241,7 @@ Add a total word count estimate at the bottom.`;
 
 export {
   completeSimple,
+  continueKBSession,
   createKBSession,
   buildIndex
 };
