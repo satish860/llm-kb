@@ -58,6 +58,7 @@ export class ChatDisplay {
   private currentResponse: Container | null = null;
   private thinkingText: Text | null = null;
   private toolsContainer: Container | null = null;
+  private answerContainer: Container | null = null;
   private answerMd: Markdown | null = null;
 
   private filesReadCount = 0;
@@ -115,11 +116,21 @@ export class ChatDisplay {
     this.startTime = Date.now();
     this.thinkingText = null;
     this.toolsContainer = null;
+    this.answerContainer = null;
     this.answerMd = null;
 
     this.currentResponse = new Container();
     this.currentResponse.addChild(new Spacer(1));
     this.currentResponse.addChild(dimText(`\u27e1 ${modelName}`));
+
+    // Pre-create sections in fixed order: tools → answer
+    // Components are added to these containers as events arrive
+    this.toolsContainer = new Container();
+    this.currentResponse.addChild(this.toolsContainer);
+
+    this.answerContainer = new Container();
+    this.currentResponse.addChild(this.answerContainer);
+
     this.messageArea.addChild(this.currentResponse);
     this.tui.requestRender();
   }
@@ -139,28 +150,23 @@ export class ChatDisplay {
   }
 
   addToolCall(toolCallId: string, label: string, toolName: string): void {
-    if (!this.currentResponse || this.shownToolCalls.has(toolCallId)) return;
+    if (!this.toolsContainer || this.shownToolCalls.has(toolCallId)) return;
     this.shownToolCalls.add(toolCallId);
     if (toolName === "read") this.filesReadCount++;
 
-    if (!this.toolsContainer) {
-      this.toolsContainer = new Container();
-      this.currentResponse.addChild(new Spacer(1));
-      this.currentResponse.addChild(this.toolsContainer);
-    }
     this.toolsContainer.addChild(dimText(`  \u25b8 ${label}`));
     this.tui.requestRender();
   }
 
   beginAnswer(): void {
-    if (!this.currentResponse || this.answerMd) return;
+    if (!this.answerContainer || this.answerMd) return;
 
-    this.currentResponse.addChild(new Spacer(1));
-    this.currentResponse.addChild(new HRule());
-    this.currentResponse.addChild(new Spacer(1));
+    this.answerContainer.addChild(new Spacer(1));
+    this.answerContainer.addChild(new HRule());
+    this.answerContainer.addChild(new Spacer(1));
 
     this.answerMd = new Markdown("", 1, 0, mdTheme);
-    this.currentResponse.addChild(this.answerMd);
+    this.answerContainer.addChild(this.answerMd);
     this.tui.requestRender();
   }
 
