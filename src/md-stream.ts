@@ -4,160 +4,129 @@ import chalk from "chalk";
  * Streaming markdown renderer for terminal output.
  *
  * Processes text_delta chunks and applies ANSI styling as patterns complete.
- * Handles: **bold**, *italic*, `code`, ## headers, --- hr, - bullets, | tables.
- *
- * Not a full markdown parser — just enough for readable CLI output.
+ * Handles: **bold**, *italic*, `code`, ## headers, --- hr, • bullets,
+ * > blockquotes, [links](url), ~~strikethrough~~, | tables.
  */
 export class MarkdownStream {
   private buffer = "";
   private isTTY: boolean;
-  private lineStart = true; // are we at the start of a new line?
 
   constructor(isTTY = false) {
     this.isTTY = isTTY;
   }
 
-  /** Feed a text_delta chunk. Returns styled string ready for process.stdout.write(). */
+  /** Feed a text_delta chunk. Returns styled string ready for stdout. */
   push(chunk: string): string {
-    if (!this.isTTY) return chunk; // no styling when piped
+    if (!this.isTTY) return chunk;
 
     this.buffer += chunk;
-    return this.flush();
+    return this.drain(false);
   }
 
   /** Flush remaining buffer (call on text_end). */
   end(): string {
     if (!this.isTTY) return "";
-    const out = this.flush(true);
+    const out = this.drain(true);
     this.buffer = "";
-    this.lineStart = true;
     return out;
   }
 
-  private flush(final = false): string {
+  private drain(final: boolean): string {
     let out = "";
 
-    while (this.buffer.length > 0) {
-      // Process complete lines first
+    while (true) {
       const nlIdx = this.buffer.indexOf("\n");
-      if (nlIdx === -1 && !final) {
-        // No complete line yet — check if we have enough for inline styling
-        const inlined = this.tryInlineStyles(this.buffer, false);
-        if (inlined !== null) {
-          out += inlined;
+
+      if (nlIdx === -1) {
+        if (final && this.buffer.length > 0) {
+          // Final flush — render whatever's left
+          out += this.renderLine(this.buffer);
           this.buffer = "";
         }
-        break; // wait for more data
-      }
-
-      if (nlIdx === -1 && final) {
-        // Final flush — process whatever remains
-        out += this.processLine(this.buffer, false);
-        this.buffer = "";
+        // else: wait for more data (incomplete line)
         break;
       }
 
-      // We have a complete line
+      // Complete line found — render it
       const line = this.buffer.slice(0, nlIdx);
       this.buffer = this.buffer.slice(nlIdx + 1);
-      out += this.processLine(line, true) + "\n";
-      this.lineStart = true;
+      out += this.renderLine(line) + "\n";
     }
 
     return out;
   }
 
-  private processLine(line: string, complete: boolean): string {
-    if (!this.lineStart) {
-      return this.applyInline(line);
-    }
-
+  /** Render a single complete line with block + inline styling. */
+  private renderLine(line: string): string {
     const trimmed = line.trimStart();
 
     // Horizontal rule
-    if (/^-{3,}$/.test(trimmed) || /^\*{3,}$/.test(trimmed)) {
+    if (/^-{3,}\s*$/.test(trimmed) || /^\*{3,}\s*$/.test(trimmed)) {
       const cols = process.stdout.columns || 80;
-      return chalk.dim("─".repeat(Math.min(cols, 60)));
+      return chalk.dim("\u2500".repeat(Math.min(cols, 60)));
     }
 
-    // Headers
+    // Headers — strip # prefix, render bold
     const headerMatch = trimmed.match(/^(#{1,6})\s+(.*)$/);
     if (headerMatch) {
-      const level = headerMatch[1].length;
-      const text = this.applyInline(headerMatch[2]);
-      if (level <= 2) return chalk.bold(text);
-      return chalk.bold(text);
+      const text = this.inline(headerMatch[2]);
+      return "\n" + chalk.bold(text);
     }
 
     // Bullet points
     const bulletMatch = trimmed.match(/^[-*+]\s+(.*)$/);
     if (bulletMatch) {
       const indent = line.length - trimmed.length;
-      const prefix = " ".repeat(indent) + chalk.dim("•") + " ";
-      return prefix + this.applyInline(bulletMatch[1]);
+      return " ".repeat(indent) + chalk.dim("\u2022") + " " + this.inline(bulletMatch[1]);
     }
 
     // Numbered lists
     const numMatch = trimmed.match(/^(\d+)[.)]\s+(.*)$/);
     if (numMatch) {
       const indent = line.length - trimmed.length;
-      return " ".repeat(indent) + chalk.dim(numMatch[1] + ".") + " " + this.applyInline(numMatch[2]);
+      return " ".repeat(indent) + chalk.dim(numMatch[1] + ".") + " " + this.inline(numMatch[2]);
     }
 
-    // Table rows
-    if (trimmed.startsWith("|")) {
-      // Separator row (|---|---|)
-      if (/^\|[\s\-:|]+\|$/.test(trimmed)) {
-        return chalk.dim(trimmed);
-      }
-      return this.applyInline(line);
+    // Table separator row
+    if (/^\|[\s\-:|]+\|$/.test(trimmed)) {
+      return chalk.dim(trimmed);
     }
 
-    // Block quotes
+    // Table data row
+    if (trimmed.startsWith("|") && trimmed.endsWith("|")) {
+      return this.inline(line);
+    }
+
+    // Block quotes — support nested > > and inline formatting
     if (trimmed.startsWith(">")) {
-      const content = trimmed.replace(/^>\s*/, "");
-      return chalk.dim("│ ") + chalk.italic(this.applyInline(content));
+      const content = trimmed.replace(/^>+\s*/, "");
+      return chalk.dim("\u2502 ") + chalk.italic(this.inline(content));
     }
 
-    this.lineStart = false;
-    return this.applyInline(line);
+    return this.inline(line);
   }
 
-  private tryInlineStyles(text: string, complete: boolean): string | null {
-    // Don't process incomplete bold/italic patterns
-    if (!complete) {
-      const openBold = (text.match(/\*\*/g) || []).length;
-      const openItalic = (text.match(/(?<!\*)\*(?!\*)/g) || []).length;
-      const openCode = (text.match(/`/g) || []).length;
-      if (openBold % 2 !== 0 || openCode % 2 !== 0) return null;
-    }
-    return this.applyInline(text);
-  }
-
-  private applyInline(text: string): string {
-    if (!this.isTTY) return text;
-
-    // Code (backticks) — must be before bold/italic to avoid conflicts
-    text = text.replace(/`([^`]+)`/g, (_, code) => chalk.cyan(code));
+  /** Apply inline markdown styling to text. */
+  private inline(text: string): string {
+    // Code spans (before bold/italic to avoid conflicts inside backticks)
+    text = text.replace(/`([^`]+)`/g, (_, c) => chalk.cyan(c));
 
     // Bold + italic
-    text = text.replace(/\*\*\*([^*]+)\*\*\*/g, (_, t) => chalk.bold.italic(t));
+    text = text.replace(/\*\*\*(.+?)\*\*\*/g, (_, t) => chalk.bold.italic(t));
 
     // Bold
-    text = text.replace(/\*\*([^*]+)\*\*/g, (_, t) => chalk.bold(t));
+    text = text.replace(/\*\*(.+?)\*\*/g, (_, t) => chalk.bold(t));
 
-    // Italic
-    text = text.replace(/(?<!\*)\*([^*]+)\*(?!\*)/g, (_, t) => chalk.italic(t));
+    // Italic (single * not adjacent to another *)
+    text = text.replace(/(?<!\*)\*(.+?)\*(?!\*)/g, (_, t) => chalk.italic(t));
 
     // Strikethrough
-    text = text.replace(/~~([^~]+)~~/g, (_, t) => chalk.strikethrough(t));
+    text = text.replace(/~~(.+?)~~/g, (_, t) => chalk.strikethrough(t));
 
-    // Links [text](url) → text (dim url)
+    // Links
     text = text.replace(/\[([^\]]+)\]\(([^)]+)\)/g, (_, label, url) =>
       `${label} ${chalk.dim(`(${url})`)}`
     );
-
-    // Emoji shortcodes (just pass through — terminal handles unicode)
 
     return text;
   }
