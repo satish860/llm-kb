@@ -42,8 +42,9 @@ interface EvalMetrics {
 export interface EvalResult {
   metrics: EvalMetrics;
   issues: EvalIssue[];
-  wikiGaps: string[];     // topics that should be in wiki
+  wikiGaps: string[];
   timestamp: string;
+  agentsInsights: string; // markdown block to inject into AGENTS.md
 }
 
 // ── Session parser ──────────────────────────────────────────────────────────
@@ -399,6 +400,64 @@ function buildReport(result: EvalResult): string {
   return lines.join("\n");
 }
 
+// ── Agents insights (injected into AGENTS.md) ──────────────────────────────
+
+function buildAgentsInsights(result: EvalResult): string {
+  const { metrics, issues, wikiGaps } = result;
+  const lines: string[] = [];
+
+  lines.push(`## Eval Insights (auto-generated ${result.timestamp.slice(0, 10)})`);
+  lines.push(``);
+
+  // Wiki gaps — tell the agent to fill these
+  if (wikiGaps.length > 0) {
+    lines.push(`### Wiki Gaps — add to wiki when users ask about these topics`);
+    for (const gap of wikiGaps.slice(0, 15)) { // cap at 15 to avoid context bloat
+      lines.push(`- ${gap}`);
+    }
+    lines.push(``);
+  }
+
+  // Behaviour fixes from errors
+  const citationErrors = issues.filter((i) => i.type === "citation" && i.severity === "error");
+  const contradictions = issues.filter((i) => i.type === "contradiction");
+  if (citationErrors.length > 0 || contradictions.length > 0) {
+    lines.push(`### Behaviour Fixes`);
+    if (citationErrors.some((i) => i.detail.includes("wiki cache"))) {
+      lines.push(`- Do NOT claim "I read the actual document" when answering from wiki. Say "Based on the knowledge wiki" instead.`);
+    }
+    if (contradictions.length > 0) {
+      lines.push(`- Double-check claims against source text before stating them as fact.`);
+    }
+    if (metrics.wastedReads > 10) {
+      lines.push(`- Be more selective with file reads. Last eval found ${metrics.wastedReads} wasted reads (files read but not cited).`);
+    }
+    lines.push(``);
+  }
+
+  // Most-read files — tell agent to prefer wiki for these
+  if (metrics.uniqueFilesRead.size > 0) {
+    const sorted = [...metrics.uniqueFilesRead.entries()].sort((a, b) => b[1] - a[1]);
+    const heavy = sorted.filter(([, count]) => count >= 3);
+    if (heavy.length > 0) {
+      lines.push(`### Heavily-Read Files — prefer wiki knowledge over re-reading these`);
+      for (const [file, count] of heavy.slice(0, 5)) {
+        lines.push(`- ${file} (read ${count} times)`);
+      }
+      lines.push(``);
+    }
+  }
+
+  // Performance note
+  const hitRate = metrics.totalQAs > 0 ? Math.round(metrics.wikiHits / metrics.totalQAs * 100) : 0;
+  lines.push(`### Performance`);
+  lines.push(`- Wiki hit rate: ${hitRate}% (target: 80%+)`);
+  lines.push(`- Avg query time: ${(metrics.avgDurationMs / 1000).toFixed(1)}s`);
+  lines.push(``);
+
+  return lines.join("\n");
+}
+
 // ── Main eval function ──────────────────────────────────────────────────────
 
 export async function runEval(
@@ -452,14 +511,23 @@ export async function runEval(
     issues: allIssues.filter((i) => i.type !== "wiki-gap"),
     wikiGaps,
     timestamp: new Date().toISOString(),
+    agentsInsights: "",
   };
 
-  // 5. Write report
-  log("Writing eval report...");
+  // 5. Build agents insights (injected into AGENTS.md on next query)
+  result.agentsInsights = buildAgentsInsights(result);
+
+  // 6. Write report + insights file
+  log("Writing eval report + insights...");
   const outputsDir = join(kbRoot, ".llm-kb", "wiki", "outputs");
   await mkdir(outputsDir, { recursive: true });
+
   const report = buildReport(result);
   await writeFile(join(outputsDir, "eval-report.md"), report, "utf-8");
+
+  // Save insights to a file that query.ts reads and injects into AGENTS.md
+  await writeFile(join(kbRoot, ".llm-kb", "eval-insights.md"), result.agentsInsights, "utf-8");
+  log("Insights saved to .llm-kb/eval-insights.md (injected into next query)");
 
   return result;
 }
