@@ -123,11 +123,10 @@ program
       tuiDisplay: chatUI,
     });
 
-    chatUI.onSubmit = async (text) => {
+    chatUI.onSubmit = (text) => {
       display.setQuestion(text);
-      try {
-        await session.prompt(text);
-      } catch { /* error shown in TUI */ }
+      // Fire-and-forget — don't await, TUI must stay responsive
+      session.prompt(text).catch(() => {});
     };
 
     chatUI.onExit = () => {
