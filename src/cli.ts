@@ -7,6 +7,7 @@ import { buildIndex } from "./indexer.js";
 import { startWatcher } from "./watcher.js";
 import { startSessionWatcher } from "./session-watcher.js";
 import { query, createChat } from "./query.js";
+import { compileArticles } from "./compiler.js";
 import { ChatDisplay } from "./tui-display.js";
 import { resolveKnowledgeBase } from "./resolve-kb.js";
 import { checkAuth, exitWithAuthError } from "./auth.js";
@@ -109,6 +110,21 @@ program
       }
     }
 
+    // Compile concept articles — skip if up to date
+    console.log(`\n  Compiling articles... ${chalk.dim(`(${config.queryModel})`)}`);
+    try {
+      const result = await compileArticles(root, sourcesDir, auth.authStorage, config.queryModel);
+      if (result.skipped) {
+        process.stdout.write(`\r${"".padEnd(process.stdout.columns || 80)}\r`);
+        console.log(chalk.dim(`  Articles up to date.`));
+      } else {
+        process.stdout.write(`\r${"".padEnd(process.stdout.columns || 80)}\r`);
+        console.log(chalk.green(`  ${result.articleCount} articles compiled to .llm-kb/wiki/articles/`));
+      }
+    } catch (err: any) {
+      console.error(chalk.red(`  Article compilation failed: ${err.message}`));
+    }
+
     console.log(`\n  ${chalk.dim("Output:")} ${sourcesDir}`);
 
     // Start watchers
@@ -183,9 +199,10 @@ program
     const auth = checkAuth();
     const config = await loadConfig(root);
 
-    const sourcesDir = join(root, ".llm-kb", "wiki", "sources");
-    const indexFile  = join(root, ".llm-kb", "wiki", "index.md");
-    const outputsDir = join(root, ".llm-kb", "wiki", "outputs");
+    const sourcesDir  = join(root, ".llm-kb", "wiki", "sources");
+    const indexFile   = join(root, ".llm-kb", "wiki", "index.md");
+    const articlesDir = join(root, ".llm-kb", "wiki", "articles");
+    const outputsDir  = join(root, ".llm-kb", "wiki", "outputs");
 
     let sourceCount = 0;
     try { sourceCount = (await readdir(sourcesDir)).filter((f) => f.endsWith(".md")).length; } catch {}
@@ -203,6 +220,10 @@ program
     console.log(`  ${chalk.dim("Folder:")}  ${root}`);
     console.log(`  ${chalk.dim("Sources:")} ${sourceCount > 0 ? `${sourceCount} parsed source${sourceCount !== 1 ? "s" : ""}` : chalk.yellow("none yet")}`);
     console.log(`  ${chalk.dim("Index:")}   ${indexAge}`);
+    let articleCount = 0;
+    try { articleCount = (await readdir(articlesDir)).filter((f) => f.endsWith(".md") && f !== "index.md").length; } catch {}
+
+    if (articleCount > 0) console.log(`  ${chalk.dim("Articles:")} ${articleCount} compiled`);
     if (outputCount > 0) console.log(`  ${chalk.dim("Outputs:")} ${outputCount} saved answer${outputCount !== 1 ? "s" : ""}`);
     console.log(`  ${chalk.dim("Models:")}  ${chalk.cyan(config.queryModel)} ${chalk.dim("(query)")}  ${chalk.cyan(config.indexModel)} ${chalk.dim("(index)")}`);
     console.log(`  ${chalk.dim("Auth:")}    ${auth.ok ? (auth.method === "pi-sdk" ? "Pi SDK" : "ANTHROPIC_API_KEY") : chalk.red("not configured")}`);
