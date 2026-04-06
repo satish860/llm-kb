@@ -66,6 +66,7 @@ export class ChatDisplay {
   private startTime = Date.now();
 
   onSubmit?: (text: string) => void;
+  onExit?: () => void;
 
   constructor() {
     this.terminal = new ProcessTerminal();
@@ -95,6 +96,18 @@ export class ChatDisplay {
 
   start(): void {
     this.tui.start();
+
+    // Ctrl+C / Ctrl+D handler — TUI captures raw input so SIGINT doesn't fire
+    this.tui.addInputListener((data) => {
+      if (data === "\x03" || data === "\x04") { // Ctrl+C or Ctrl+D
+        this.stop();
+        if (this.onExit) this.onExit();
+        else process.exit(0);
+        return { consume: true };
+      }
+      return undefined;
+    });
+
     this.tui.requestRender();
   }
 

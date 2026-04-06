@@ -130,12 +130,12 @@ program
       } catch { /* error shown in TUI */ }
     };
 
-    process.on("SIGINT", async () => {
-      await display.flush();
-      session.dispose();
-      chatUI.stop();
-      process.exit(0);
-    });
+    chatUI.onExit = () => {
+      display.flush().then(() => {
+        session.dispose();
+        process.exit(0);
+      });
+    };
 
     console.log(`\n${chalk.bold("Ready.")} Ask a question or drop files in to re-index.\n`);
     chatUI.start();
