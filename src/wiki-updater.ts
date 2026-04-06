@@ -6,12 +6,10 @@ import { join } from "node:path";
 import { homedir } from "node:os";
 import type { KBTrace } from "./trace-builder.js";
 
-/** Resolve the Anthropic API key from auth storage or env */
 async function resolveApiKey(authStorage?: AuthStorage): Promise<string | undefined> {
   if (authStorage) {
     return authStorage.getApiKey("anthropic");
   }
-  // Fall back to Pi SDK file-based auth
   const piAuthPath = join(homedir(), ".pi", "agent", "auth.json");
   if (existsSync(piAuthPath)) {
     const storage = AuthStorage.create(piAuthPath);
@@ -27,15 +25,29 @@ function buildPrompt(
   date: string,
   currentWiki: string
 ): string {
+  const rules = `Rules for wiki structure:
+- Use ## for CONCEPTS and TOPICS — NOT source file names
+  Good: "## Electronic Evidence", "## Mob Lynching", "## Burden of Proof"
+  Bad: "## Indian Evidence Act.md", "## indian penal code - new.md"
+- Use ### for subtopics within a concept
+- A concept can draw from MULTIPLE source files — synthesize, don't separate by file
+- If knowledge from this Q&A fits an existing concept, ADD to it — never duplicate
+- If it's a genuinely new concept, create a new ## section
+- Be concise: bullet points for lists, short prose for explanations
+- Include source citations inline: (Source: filename, p.X)
+- Add cross-references where concepts relate: See also: [[Other Concept]]
+- End each ## section with: *Sources: file1, file2 · date*
+- Separate ## sections with: ---`;
+
   if (currentWiki.trim()) {
-    return `You are maintaining a knowledge wiki for a document collection.
+    return `You are maintaining a concept-organized knowledge wiki.
 
 ## Current wiki
 ${currentWiki}
 
 ## New Q&A to integrate
 **Question:** ${question}
-**Sources:** ${sources}  
+**Sources used:** ${sources}
 **Date:** ${date}
 
 **Answer:**
@@ -43,24 +55,17 @@ ${answer}
 
 ---
 
-Update the wiki to integrate this new knowledge. Rules:
-- Use ## for top-level topic (source document name, e.g. "## Bankers Books Evidence Act, 1891")
-- Use ### for subtopics (e.g. "### Key Sections", "### Definitions", "### Overview")
-- Group related knowledge under the right subtopic — not just the verbatim question
-- If topic/subtopic already exists, expand or update — never duplicate
-- Be concise: bullet points for lists, short prose for explanations
-- Preserve all existing content
-- End each ## section with: *Sources: X · date*
-- Separate ## sections with: ---
+Update the wiki to integrate this new knowledge.
+${rules}
 
 Return ONLY the complete updated wiki markdown. No explanation.`;
   }
 
-  return `You are creating a knowledge wiki for a document collection.
+  return `You are creating a concept-organized knowledge wiki.
 
 ## First Q&A to add
 **Question:** ${question}
-**Sources:** ${sources}
+**Sources used:** ${sources}
 **Date:** ${date}
 
 **Answer:**
@@ -68,19 +73,17 @@ ${answer}
 
 ---
 
-Create a clean wiki. Rules:
-- Start with exactly: # Knowledge Wiki\\n\\n> Auto-generated knowledge base. Updated after each query.\\n\\n---\\n
-- Use ## for top-level topic (source document name, e.g. "## Bankers Books Evidence Act, 1891")
-- Use ### for subtopics (e.g. "### Key Sections", "### Definitions", "### Overview")
-- Be concise: bullet points for lists, short prose for explanations
-- End each ## section with: *Sources: X · date*
+Create a clean wiki from this Q&A.
+- Start with: # Knowledge Wiki\\n\\n> Concept-organized knowledge base. Updated after each query.\\n\\n---
+${rules}
 
 Return ONLY the wiki markdown. No explanation.`;
 }
 
 /**
- * Update .llm-kb/wiki/wiki.md using a direct LLM call (no agent tools).
- * We handle all file I/O ourselves — read current wiki, call Haiku, write result.
+ * Update .llm-kb/wiki/wiki.md using a direct Haiku call.
+ * Organizes knowledge by CONCEPT (cross-cutting topics),
+ * not by source file.
  */
 export async function updateWiki(
   kbRoot: string,
@@ -94,12 +97,10 @@ export async function updateWiki(
   await mkdir(wikiDir, { recursive: true });
   const wikiPath = join(wikiDir, "wiki.md");
 
-  // Read current wiki (if any)
   const currentWiki = existsSync(wikiPath)
     ? await readFile(wikiPath, "utf-8").catch(() => "")
     : "";
 
-  // Derive sources from files read (exclude index/wiki themselves)
   const sources = trace.filesRead
     .map((f) => f.split(/[\\/]/).pop() ?? f)
     .filter((f) => f.endsWith(".md") && f !== "index.md" && f !== "wiki.md")
@@ -108,25 +109,21 @@ export async function updateWiki(
   const date = new Date(trace.timestamp).toISOString().slice(0, 10);
   const prompt = buildPrompt(trace.question, trace.answer, sources, date, currentWiki);
 
-  // Resolve API key
   const apiKey = await resolveApiKey(authStorage);
-  if (!apiKey) return; // can't update wiki without auth
+  if (!apiKey) return;
 
-  // Find Haiku model
   const model = getModels("anthropic").find((m) => m.id === indexModelId);
   if (!model) return;
 
-  // Direct LLM call — no agent, no tools
   const result = await completeSimple(
     model,
     {
-      systemPrompt: "You are a precise technical writer maintaining a structured knowledge wiki. Return only clean markdown.",
+      systemPrompt: "You are a precise knowledge librarian. Organize information by CONCEPT, not by source file. Synthesize knowledge from multiple sources into unified topic articles. Return only clean markdown.",
       messages: [{ role: "user", content: prompt, timestamp: Date.now() }],
     },
     { apiKey }
   );
 
-  // Extract text from response
   const text = result.content
     .filter((b) => b.type === "text")
     .map((b) => (b as any).text)
