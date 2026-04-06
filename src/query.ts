@@ -15,8 +15,11 @@ import { saveTrace, appendToQueryLog, KBTrace } from "./trace-builder.js";
 import { updateWiki } from "./wiki-updater.js";
 import { join, dirname, basename } from "node:path";
 import { fileURLToPath } from "node:url";
+import chalk from "chalk";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
+
+// ── Shared helpers ──────────────────────────────────────────────────────────
 
 function getNodeModulesPath(): string {
   let dir = __dirname;
@@ -26,6 +29,44 @@ function getNodeModulesPath(): string {
   }
   return join(process.cwd(), "node_modules");
 }
+
+function extractAnswerText(content: any[]): string {
+  return (content ?? [])
+    .filter((b: any) => b.type === "text")
+    .map((b: any) => b.text ?? "")
+    .join("")
+    .trim();
+}
+
+function extractFilesRead(messages: any[]): string[] {
+  const paths: string[] = [];
+  for (const msg of messages) {
+    if (msg.role !== "assistant") continue;
+    for (const block of msg.content ?? []) {
+      if (block.type === "toolCall" && block.name === "read") {
+        const p: string = block.arguments?.path ?? "";
+        if (p && !paths.includes(p)) paths.push(p);
+      }
+    }
+  }
+  return paths;
+}
+
+/** Return a display label for a tool call, or null to suppress it */
+function getToolLabel(toolName: string, args: any): string | null {
+  if (toolName === "read" || toolName === "write" || toolName === "edit") {
+    const file = basename((args?.path as string) ?? "");
+    if (!file || !/\.[a-z0-9]{1,6}$/i.test(file)) return null;
+    const verb = toolName === "read" ? "Reading" : toolName === "write" ? "Writing" : "Editing";
+    return `${verb}  ${file}`;
+  }
+  if (toolName === "bash" && args?.command) {
+    return `Running  ${(args.command as string).trim().split("\n")[0].slice(0, 60)}`;
+  }
+  return null;
+}
+
+// ── AGENTS.md builder ───────────────────────────────────────────────────────
 
 function buildQueryAgents(sourceFiles: string[], save: boolean, wikiContent: string): string {
   const sourceList = sourceFiles.map((f) => `  - ${f}`).join("\n");
@@ -82,56 +123,8 @@ Include the question at the top and all citations.
   return content;
 }
 
-/** Extract plain text from an assistant message content array */
-function extractAnswerText(content: any[]): string {
-  return (content ?? [])
-    .filter((b: any) => b.type === "text")
-    .map((b: any) => b.text ?? "")
-    .join("")
-    .trim();
-}
+// ── Wiki update scheduler ───────────────────────────────────────────────────
 
-/** Return a display label for a tool execution, or null to suppress it */
-function getToolLabel(toolName: string, args: any): string | null {
-  if (toolName === "read" || toolName === "write" || toolName === "edit") {
-    const file = basename((args?.path as string) ?? "");
-    // Skip if no real file extension (e.g. directory paths like "2. My folder")
-    if (!file || !/\.[a-z0-9]{1,6}$/i.test(file)) return null;
-    const verb = toolName === "read" ? "Reading" : toolName === "write" ? "Writing" : "Editing";
-    return `${verb}  ${file}`;
-  }
-  if (toolName === "bash" && args?.command) {
-    const cmd = (args.command as string).trim().split("\n")[0].slice(0, 60);
-    return `Running  ${cmd}`;
-  }
-  return null; // suppress run_experiment and other internal tools
-}
-
-/** Extract all file paths from read tool calls across all messages */
-function extractFilesRead(messages: any[]): string[] {
-  const paths: string[] = [];
-  for (const msg of messages) {
-    if (msg.role !== "assistant") continue;
-    for (const block of msg.content ?? []) {
-      if (block.type === "toolCall" && block.name === "read") {
-        const p: string = block.arguments?.path ?? "";
-        if (p && !paths.includes(p)) paths.push(p);
-      }
-    }
-  }
-  return paths;
-}
-
-/**
- * Schedules wiki updates triggered by Pi session events.
- *
- * Fires on:
- * - message_end  when stopReason === "stop" (a real answer, not a mid-tool-call turn)
- *   → throttled: only if N stop-messages have accumulated OR M minutes have elapsed
- * - agent_end    always — final flush regardless of counters
- *
- * Updates are chained (serial) so concurrent writes never race.
- */
 class WikiUpdateScheduler {
   private stopMsgCount = 0;
   private lastUpdateAt = 0;
@@ -154,7 +147,6 @@ class WikiUpdateScheduler {
     this.chain = this.chain.then(() => work().catch(() => {}));
   }
 
-  /** Call on every message_end event */
   onMessageEnd(message: any, getSnapshot: () => { messages: any[] }, doUpdate: (msgs: any[]) => Promise<void>) {
     if (message.role !== "assistant" || message.stopReason !== "stop") return;
     this.stopMsgCount++;
@@ -165,17 +157,15 @@ class WikiUpdateScheduler {
     }
   }
 
-  /** Call on agent_end — always flushes */
   onAgentEnd(messages: any[], doUpdate: (msgs: any[]) => Promise<void>) {
     this.lastUpdateAt = Date.now();
     this.enqueue(() => doUpdate(messages));
   }
 
-  /** Await all queued updates */
-  flush(): Promise<void> {
-    return this.chain;
-  }
+  flush(): Promise<void> { return this.chain; }
 }
+
+// ── Main query function ─────────────────────────────────────────────────────
 
 export async function query(
   folder: string,
@@ -183,7 +173,6 @@ export async function query(
   options: { save?: boolean; authStorage?: AuthStorage; modelId?: string }
 ): Promise<void> {
   const sourcesDir = join(folder, ".llm-kb", "wiki", "sources");
-
   const files = await readdir(sourcesDir);
   const mdFiles = files.filter((f) => f.endsWith(".md"));
 
@@ -232,14 +221,13 @@ export async function query(
     settingsManager: SettingsManager.inMemory({
       compaction: { enabled: false },
     }),
-    thinkingLevel: "low", // show thinking; "low" is fast and lightweight
+    thinkingLevel: "low",
     ...(options.authStorage ? { authStorage: options.authStorage } : {}),
     ...(model ? { model } : {}),
   });
 
   session.setSessionName(`query: ${question}`);
 
-  // Every 5 stop-messages OR every 3 minutes — whichever comes first
   const scheduler = new WikiUpdateScheduler(5, 3);
 
   const buildTraceFromMessages = (messages: any[]): KBTrace | null => {
@@ -247,21 +235,16 @@ export async function query(
       .reverse()
       .find((m) => m.role === "assistant" && m.stopReason === "stop");
     if (!lastAssistant) return null;
-
-    const answer = extractAnswerText(lastAssistant.content);
-    const filesRead = extractFilesRead(messages);
-    const filesSkipped = mdFiles.filter((f) => !filesRead.some((r) => r.endsWith(f)));
-
     return {
       sessionId: session.sessionId,
       sessionFile: session.sessionFile ?? "",
       timestamp: new Date().toISOString(),
       mode: "query",
       question,
-      answer,
-      filesRead,
+      answer: extractAnswerText(lastAssistant.content),
+      filesRead: extractFilesRead(messages),
       filesAvailable: mdFiles,
-      filesSkipped,
+      filesSkipped: mdFiles.filter((f) => !extractFilesRead(messages).some((r) => r.endsWith(f))),
       model: lastAssistant.model,
     };
   };
@@ -274,69 +257,107 @@ export async function query(
     await updateWiki(folder, trace, options.authStorage);
   };
 
-  let hadToolOutput = false;
-  let outputStarted = false; // any output has begun (dot, thinking, tools, text)
+  // ── Display ─────────────────────────────────────────────────────────────
+  //
+  // Claude Web-style output:
+  //
+  //   ⟡ claude-sonnet-4-6
+  //
+  //   ▸ Thinking
+  //     The user wants to know about...
+  //
+  //   ▸ Reading  index.md
+  //   ▸ Reading  Indian Evidence Act.md
+  //
+  //   ──────────────────────────────────
+  //
+  //   ## The Indian Evidence Act...
+  //   (answer streams)
+  //
+  //   ── 4.2s · 2 files read ──────────
+  //
+
+  const dim = (s: string) => process.stdout.isTTY ? chalk.dim(s) : s;
+  const thinLine = () => {
+    const cols = process.stdout.columns || 80;
+    return dim("\u2500".repeat(cols));
+  };
+
+  let phase: "idle" | "thinking" | "tools" | "answer" = "idle";
+  let filesReadCount = 0;
+  const shownToolCalls = new Set<string>();
+  const startTime = Date.now();
 
   session.subscribe((event) => {
 
-    // ── Immediate dot on first turn ───────────────────────────────────
-    // Stays visible on its own line — no ’r tricks, no clearing.
-    if (event.type === "turn_start" && !outputStarted) {
-      if (process.stdout.isTTY) process.stdout.write(chalk.dim("  ●\n"));
-      outputStarted = true;
+    // ═══ 1. Model header ═══════════════════════════════════════════════════
+    if (event.type === "turn_start" && phase === "idle") {
+      const modelName = options.modelId ?? "claude-sonnet-4-6";
+      process.stdout.write(dim(`\u27e1 ${modelName}`) + "\n");
     }
 
-    // ── Tool call decided (model side) + tool execution (actual run) ───────
+    // ═══ 2. Thinking ══════════════════════════════════════════════════════
+    if (event.type === "message_update") {
+      const ae = event.assistantMessageEvent;
+
+      if (ae.type === "thinking_start") {
+        process.stdout.write(dim("\n\u25b8 Thinking\n"));
+        phase = "thinking";
+      }
+
+      if (ae.type === "thinking_delta") {
+        process.stdout.write(dim(`  ${ae.delta}`));
+      }
+
+      if (ae.type === "thinking_end") {
+        process.stdout.write("\n");
+      }
+    }
+
+    // ═══ 3. Tool calls ════════════════════════════════════════════════════
+    // Show from toolcall_end (model decision) with fallback to tool_execution_start
     if (event.type === "message_update") {
       const ae = event.assistantMessageEvent as any;
-
-      // toolcall_end fires when the model finishes writing the tool call JSON.
-      // Show a dim line immediately — before the tool actually runs.
       if (ae.type === "toolcall_end" && ae.toolCall) {
         const label = getToolLabel(ae.toolCall.name, ae.toolCall.arguments);
         if (label) {
-          const line = process.stdout.isTTY ? chalk.dim(`  ${label}`) : `  ${label}`;
-          process.stdout.write(`\n${line}\n`);
-          hadToolOutput = true;
+          if (phase !== "tools") {
+            process.stdout.write("\n");
+            phase = "tools";
+          }
+          process.stdout.write(dim(`  \u25b8 ${label}`) + "\n");
+          shownToolCalls.add(ae.toolCall.id);
+          if (ae.toolCall.name === "read") filesReadCount++;
         }
       }
     }
 
     if (event.type === "tool_execution_start") {
-      // tool_execution_start fires when the tool actually begins running.
-      // Only show if we didn’t already show it from toolcall_end above.
-      if (!hadToolOutput) {
-        const { toolName, args } = event as any;
+      const { toolCallId, toolName, args } = event as any;
+      if (!shownToolCalls.has(toolCallId)) {
         const label = getToolLabel(toolName, args);
         if (label) {
-          const line = process.stdout.isTTY ? chalk.dim(`  ${label}`) : `  ${label}`;
-          process.stdout.write(`\n${line}\n`);
-          hadToolOutput = true;
+          if (phase !== "tools") {
+            process.stdout.write("\n");
+            phase = "tools";
+          }
+          process.stdout.write(dim(`  \u25b8 ${label}`) + "\n");
+          shownToolCalls.add(toolCallId);
+          if (toolName === "read") filesReadCount++;
         }
       }
     }
 
-    // ── Thinking + answer text ────────────────────────────────────────────
+    // ═══ 4. Answer ════════════════════════════════════════════════════════
     if (event.type === "message_update") {
       const ae = event.assistantMessageEvent;
 
-      if (ae.type === "thinking_start") {
-        process.stdout.write("\n"); // blank line after the ● dot
-      }
-
-      if (ae.type === "thinking_delta") {
-        const chunk = process.stdout.isTTY ? chalk.dim(ae.delta) : ae.delta;
-        process.stdout.write(chunk);
-      }
-
-      if (ae.type === "thinking_end") {
-        process.stdout.write("\n\n"); // blank line before answer
-        hadToolOutput = false;
-      }
-
-      if (ae.type === "text_start" && hadToolOutput) {
-        process.stdout.write("\n"); // blank line between last tool line and answer
-        hadToolOutput = false;
+      if (ae.type === "text_start" && phase !== "answer") {
+        // Separator between processing steps and the final answer
+        if (phase === "thinking" || phase === "tools") {
+          process.stdout.write(`\n${thinLine()}\n\n`);
+        }
+        phase = "answer";
       }
 
       if (ae.type === "text_delta") {
@@ -344,7 +365,21 @@ export async function query(
       }
     }
 
-    // ── Wiki update throttle ──────────────────────────────────────────────
+    // ═══ 5. Completion bar ════════════════════════════════════════════════
+    if (event.type === "agent_end") {
+      const elapsed = ((Date.now() - startTime) / 1000).toFixed(1);
+      const source = filesReadCount > 0
+        ? `${filesReadCount} file${filesReadCount !== 1 ? "s" : ""} read`
+        : "wiki";
+      const stats = `${elapsed}s \u00b7 ${source}`;
+      const cols = process.stdout.columns || 80;
+      const pad = Math.max(0, cols - stats.length - 4);
+      process.stdout.write(`\n\n${dim("\u2500\u2500 " + stats + " " + "\u2500".repeat(pad))}\n`);
+
+      scheduler.onAgentEnd(event.messages as any[], doUpdate);
+    }
+
+    // ═══ Wiki update throttle ═════════════════════════════════════════════
     if (event.type === "message_end") {
       scheduler.onMessageEnd(
         event.message,
@@ -352,20 +387,13 @@ export async function query(
         doUpdate
       );
     }
-
-    if (event.type === "agent_end") {
-      scheduler.onAgentEnd(event.messages as any[], doUpdate);
-    }
   });
 
   await session.prompt(question);
-  console.log();
 
-  // Wait for all scheduled wiki updates to complete before disposing
   await scheduler.flush();
   session.dispose();
 
-  // Re-index after save so the compounding loop works
   if (options.save) {
     const { buildIndex } = await import("./indexer.js");
     await buildIndex(folder, sourcesDir, undefined, options.authStorage);
