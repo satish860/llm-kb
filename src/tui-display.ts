@@ -56,6 +56,7 @@ export class ChatDisplay {
 
   // Current response components (reset per prompt)
   private currentResponse: Container | null = null;
+  private thinkingContainer: Container | null = null;
   private thinkingText: Text | null = null;
   private toolsContainer: Container | null = null;
   private answerContainer: Container | null = null;
@@ -127,6 +128,7 @@ export class ChatDisplay {
     this.filesReadCount = 0;
     this.shownToolCalls = new Set();
     this.startTime = Date.now();
+    this.thinkingContainer = null;
     this.thinkingText = null;
     this.toolsContainer = null;
     this.answerContainer = null;
@@ -136,8 +138,11 @@ export class ChatDisplay {
     this.currentResponse.addChild(new Spacer(1));
     this.currentResponse.addChild(dimText(`\u27e1 ${modelName}`));
 
-    // Pre-create sections in fixed order: tools → answer
+    // Pre-create sections in fixed order: thinking → tools → answer
     // Components are added to these containers as events arrive
+    this.thinkingContainer = new Container();
+    this.currentResponse.addChild(this.thinkingContainer);
+
     this.toolsContainer = new Container();
     this.currentResponse.addChild(this.toolsContainer);
 
@@ -149,12 +154,12 @@ export class ChatDisplay {
   }
 
   appendThinking(text: string): void {
-    if (!this.currentResponse) return;
+    if (!this.thinkingContainer) return;
     if (!this.thinkingText) {
-      this.currentResponse.addChild(new Spacer(1));
-      this.currentResponse.addChild(dimText("\u25b8 Thinking"));
+      this.thinkingContainer.addChild(new Spacer(1));
+      this.thinkingContainer.addChild(dimText("\u25b8 Thinking"));
       this.thinkingText = new Text(chalk.dim(chalk.italic(text)), 2, 0);
-      this.currentResponse.addChild(this.thinkingText);
+      this.thinkingContainer.addChild(this.thinkingText);
     } else {
       const prev = (this.thinkingText as any).text ?? "";
       this.thinkingText.setText(chalk.dim(chalk.italic(prev.replace(/\x1b\[[0-9;]*m/g, "") + text)));
