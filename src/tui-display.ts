@@ -1,10 +1,10 @@
 import {
   TUI, Container, Spacer, Text, Markdown, ProcessTerminal,
-  type MarkdownTheme, Input,
+  type MarkdownTheme, type Component, Input,
 } from "@mariozechner/pi-tui";
 import chalk from "chalk";
 
-// ── Markdown theme (matches Pi's look) ──────────────────────────────────────
+// ── Markdown theme ──────────────────────────────────────────────────────────
 
 function createMarkdownTheme(): MarkdownTheme {
   return {
@@ -27,13 +27,25 @@ function createMarkdownTheme(): MarkdownTheme {
 
 const mdTheme = createMarkdownTheme();
 
-// ── Helper to create dim text ───────────────────────────────────────────────
+// ── Helper components ───────────────────────────────────────────────────────
 
 function dimText(text: string, px = 1, py = 0): Text {
   return new Text(chalk.dim(text), px, py);
 }
 
-// ── Chat display (manages TUI components for one conversation) ──────────────
+/** Horizontal rule that spans full render width */
+class HRule implements Component {
+  private colorFn: (s: string) => string;
+  constructor(colorFn?: (s: string) => string) {
+    this.colorFn = colorFn ?? chalk.dim;
+  }
+  invalidate() {}
+  render(width: number): string[] {
+    return [this.colorFn("\u2500".repeat(width))];
+  }
+}
+
+// ── Chat display ────────────────────────────────────────────────────────────
 
 export class ChatDisplay {
   private tui: TUI;
@@ -41,14 +53,12 @@ export class ChatDisplay {
   private messageArea: Container;
   private inputArea: Container;
   private input: Input;
-  private separator: Text;
 
   // Current response components (reset per prompt)
   private currentResponse: Container | null = null;
   private thinkingText: Text | null = null;
   private toolsContainer: Container | null = null;
   private answerMd: Markdown | null = null;
-  private completionText: Text | null = null;
 
   private filesReadCount = 0;
   private shownToolCalls = new Set<string>();
@@ -60,14 +70,12 @@ export class ChatDisplay {
     this.terminal = new ProcessTerminal();
     this.tui = new TUI(this.terminal);
 
-    // Layout: messages + separator + input
+    // Layout: messages + separator + input + separator
     this.messageArea = new Container();
     this.tui.addChild(this.messageArea);
 
     this.inputArea = new Container();
-    const hrLine = chalk.hex("#c678dd")("\u2500".repeat(80));
-    this.separator = new Text(hrLine, 0, 0);
-    this.inputArea.addChild(this.separator);
+    this.inputArea.addChild(new HRule((s) => chalk.hex("#c678dd")(s)));
 
     this.input = new Input();
     this.input.onSubmit = (text) => {
@@ -78,7 +86,7 @@ export class ChatDisplay {
       this.input.setValue("");
     };
     this.inputArea.addChild(this.input);
-    this.inputArea.addChild(new Text(hrLine, 0, 0));
+    this.inputArea.addChild(new HRule((s) => chalk.hex("#c678dd")(s)));
 
     this.tui.addChild(this.inputArea);
     this.tui.setFocus(this.input);
@@ -93,16 +101,14 @@ export class ChatDisplay {
     this.tui.stop();
   }
 
-  /** Add a user message bubble to the conversation */
   addUserMessage(text: string): void {
     this.messageArea.addChild(new Spacer(1));
     this.messageArea.addChild(new Text(chalk.bold(text), 1, 0));
     this.tui.requestRender();
   }
 
-  // ── Per-prompt display lifecycle ────────────────────────────────────────
+  // ── Per-prompt lifecycle ────────────────────────────────────────────────
 
-  /** Called on agent_start — reset state for new response */
   beginResponse(modelName: string): void {
     this.filesReadCount = 0;
     this.shownToolCalls = new Set();
@@ -110,7 +116,6 @@ export class ChatDisplay {
     this.thinkingText = null;
     this.toolsContainer = null;
     this.answerMd = null;
-    this.completionText = null;
 
     this.currentResponse = new Container();
     this.currentResponse.addChild(new Spacer(1));
@@ -119,23 +124,20 @@ export class ChatDisplay {
     this.tui.requestRender();
   }
 
-  /** Append thinking text */
   appendThinking(text: string): void {
     if (!this.currentResponse) return;
     if (!this.thinkingText) {
       this.currentResponse.addChild(new Spacer(1));
-      this.thinkingText = new Text(chalk.dim(chalk.italic(text)), 2, 0);
       this.currentResponse.addChild(dimText("\u25b8 Thinking"));
+      this.thinkingText = new Text(chalk.dim(chalk.italic(text)), 2, 0);
       this.currentResponse.addChild(this.thinkingText);
     } else {
-      // Append to existing thinking text
       const prev = (this.thinkingText as any).text ?? "";
       this.thinkingText.setText(chalk.dim(chalk.italic(prev.replace(/\x1b\[[0-9;]*m/g, "") + text)));
     }
     this.tui.requestRender();
   }
 
-  /** Show a tool call line */
   addToolCall(toolCallId: string, label: string, toolName: string): void {
     if (!this.currentResponse || this.shownToolCalls.has(toolCallId)) return;
     this.shownToolCalls.add(toolCallId);
@@ -150,14 +152,11 @@ export class ChatDisplay {
     this.tui.requestRender();
   }
 
-  /** Start the answer section with a separator */
   beginAnswer(): void {
-    if (!this.currentResponse) return;
-    if (this.answerMd) return; // already started
+    if (!this.currentResponse || this.answerMd) return;
 
     this.currentResponse.addChild(new Spacer(1));
-    const cols = this.terminal.columns || 80;
-    this.currentResponse.addChild(dimText("\u2500".repeat(cols), 0));
+    this.currentResponse.addChild(new HRule());
     this.currentResponse.addChild(new Spacer(1));
 
     this.answerMd = new Markdown("", 1, 0, mdTheme);
@@ -165,40 +164,41 @@ export class ChatDisplay {
     this.tui.requestRender();
   }
 
-  /** Append text to the answer (called on text_delta) */
   appendAnswer(text: string): void {
     if (!this.answerMd) this.beginAnswer();
-    // Markdown component expects the full text — we accumulate
     const prev = (this.answerMd as any).text ?? "";
     this.answerMd!.setText(prev + text);
     this.tui.requestRender();
   }
 
-  /** Show the completion bar */
   showCompletion(): void {
     if (!this.currentResponse) return;
     const elapsed = ((Date.now() - this.startTime) / 1000).toFixed(1);
     const source = this.filesReadCount > 0
       ? `${this.filesReadCount} file${this.filesReadCount !== 1 ? "s" : ""} read`
       : "wiki";
-    const stats = `${elapsed}s \u00b7 ${source}`;
-    const cols = this.terminal.columns || 80;
-    const pad = Math.max(0, cols - stats.length - 4);
-    const bar = chalk.dim("\u2500\u2500 " + stats + " " + "\u2500".repeat(pad));
+    const stats = `\u2500\u2500 ${elapsed}s \u00b7 ${source} `;
+
+    // Custom component that fills remaining width with ─
+    const completion: Component = {
+      invalidate() {},
+      render(width: number) {
+        const pad = Math.max(0, width - stats.length);
+        return [chalk.dim(stats + "\u2500".repeat(pad))];
+      },
+    };
 
     this.currentResponse.addChild(new Spacer(1));
-    this.currentResponse.addChild(new Text(bar, 0, 0));
+    this.currentResponse.addChild(completion);
     this.currentResponse = null;
     this.tui.requestRender();
   }
 
-  /** Re-enable the input after response completes */
   enableInput(): void {
     this.tui.setFocus(this.input);
     this.tui.requestRender();
   }
 
-  /** Disable input during response */
   disableInput(): void {
     this.tui.setFocus(null);
   }
