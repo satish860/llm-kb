@@ -7,6 +7,7 @@ import {
   SettingsManager,
   AuthStorage,
 } from "@mariozechner/pi-coding-agent";
+import type { AgentSession } from "@mariozechner/pi-coding-agent";
 import { getModels } from "@mariozechner/pi-ai";
 import { readdir, mkdir, readFile } from "node:fs/promises";
 import { existsSync } from "node:fs";
@@ -52,7 +53,6 @@ function extractFilesRead(messages: any[]): string[] {
   return paths;
 }
 
-/** Return a display label for a tool call, or null to suppress it */
 function getToolLabel(toolName: string, args: any): string | null {
   if (toolName === "read" || toolName === "write" || toolName === "edit") {
     const file = basename((args?.path as string) ?? "");
@@ -123,6 +123,186 @@ Include the question at the top and all citations.
   return content;
 }
 
+// ── Display subscriber ──────────────────────────────────────────────────────
+//
+// Claude Web UI-style output:
+//
+//   ⟡ claude-sonnet-4-6
+//
+//   ▸ Thinking
+//     The user wants to know about...
+//
+//   ▸ Reading  index.md
+//   ▸ Reading  Indian Evidence Act.md
+//
+//   ──────────────────────────────────
+//
+//   ## The Indian Evidence Act...
+//   (answer streams)
+//
+//   ── 4.2s · 2 files read ──────────
+//
+
+function subscribeDisplay(
+  session: AgentSession,
+  opts: { modelId?: string; authStorage?: AuthStorage; folder: string; mdFiles: string[] }
+) {
+  const dim = (s: string) => process.stdout.isTTY ? chalk.dim(s) : s;
+  const thinLine = () => {
+    const cols = process.stdout.columns || 80;
+    return dim("\u2500".repeat(cols));
+  };
+
+  // Per-prompt state — reset on agent_start
+  let phase: "idle" | "thinking" | "tools" | "answer" = "idle";
+  let filesReadCount = 0;
+  let shownToolCalls = new Set<string>();
+  let startTime = Date.now();
+
+  // Wiki update scheduler — persistent across prompts
+  const scheduler = new WikiUpdateScheduler(5, 3);
+
+  const buildTraceFromMessages = (messages: any[], question: string): KBTrace | null => {
+    const lastAssistant = [...messages]
+      .reverse()
+      .find((m) => m.role === "assistant" && m.stopReason === "stop");
+    if (!lastAssistant) return null;
+    const filesRead = extractFilesRead(messages);
+    return {
+      sessionId: session.sessionId,
+      sessionFile: session.sessionFile ?? "",
+      timestamp: new Date().toISOString(),
+      mode: "query",
+      question,
+      answer: extractAnswerText(lastAssistant.content),
+      filesRead,
+      filesAvailable: opts.mdFiles,
+      filesSkipped: opts.mdFiles.filter((f) => !filesRead.some((r) => r.endsWith(f))),
+      model: lastAssistant.model,
+    };
+  };
+
+  // Track the latest user question for trace building
+  let lastQuestion = "";
+
+  const doUpdate = async (messages: any[]) => {
+    const trace = buildTraceFromMessages(messages, lastQuestion);
+    if (!trace) return;
+    await saveTrace(opts.folder, trace);
+    await appendToQueryLog(opts.folder, trace);
+    await updateWiki(opts.folder, trace, opts.authStorage);
+  };
+
+  session.subscribe((event) => {
+
+    // ═══ Reset on each prompt cycle ═══════════════════════════════════════
+    if (event.type === "agent_start") {
+      phase = "idle";
+      filesReadCount = 0;
+      shownToolCalls = new Set();
+      startTime = Date.now();
+    }
+
+    // ═══ 1. Model header ═════════════════════════════════════════════════
+    if (event.type === "turn_start" && phase === "idle") {
+      const modelName = opts.modelId ?? "claude-sonnet-4-6";
+      process.stdout.write(dim(`\u27e1 ${modelName}`) + "\n");
+    }
+
+    // ═══ 2. Thinking ═════════════════════════════════════════════════════
+    if (event.type === "message_update") {
+      const ae = event.assistantMessageEvent;
+      if (ae.type === "thinking_start") {
+        process.stdout.write(dim("\n\u25b8 Thinking\n"));
+        phase = "thinking";
+      }
+      if (ae.type === "thinking_delta") {
+        process.stdout.write(dim(`  ${ae.delta}`));
+      }
+      if (ae.type === "thinking_end") {
+        process.stdout.write("\n");
+      }
+    }
+
+    // ═══ 3. Tool calls ═══════════════════════════════════════════════════
+    if (event.type === "message_update") {
+      const ae = event.assistantMessageEvent as any;
+      if (ae.type === "toolcall_end" && ae.toolCall) {
+        const label = getToolLabel(ae.toolCall.name, ae.toolCall.arguments);
+        if (label) {
+          if (phase !== "tools") {
+            process.stdout.write("\n");
+            phase = "tools";
+          }
+          process.stdout.write(dim(`  \u25b8 ${label}`) + "\n");
+          shownToolCalls.add(ae.toolCall.id);
+          if (ae.toolCall.name === "read") filesReadCount++;
+        }
+      }
+    }
+
+    if (event.type === "tool_execution_start") {
+      const { toolCallId, toolName, args } = event as any;
+      if (!shownToolCalls.has(toolCallId)) {
+        const label = getToolLabel(toolName, args);
+        if (label) {
+          if (phase !== "tools") {
+            process.stdout.write("\n");
+            phase = "tools";
+          }
+          process.stdout.write(dim(`  \u25b8 ${label}`) + "\n");
+          shownToolCalls.add(toolCallId);
+          if (toolName === "read") filesReadCount++;
+        }
+      }
+    }
+
+    // ═══ 4. Answer ═══════════════════════════════════════════════════════
+    if (event.type === "message_update") {
+      const ae = event.assistantMessageEvent;
+      if (ae.type === "text_start" && phase !== "answer") {
+        if (phase === "thinking" || phase === "tools") {
+          process.stdout.write(`\n${thinLine()}\n\n`);
+        }
+        phase = "answer";
+      }
+      if (ae.type === "text_delta") {
+        process.stdout.write(ae.delta);
+      }
+    }
+
+    // ═══ 5. Completion bar ═══════════════════════════════════════════════
+    if (event.type === "agent_end") {
+      const elapsed = ((Date.now() - startTime) / 1000).toFixed(1);
+      const source = filesReadCount > 0
+        ? `${filesReadCount} file${filesReadCount !== 1 ? "s" : ""} read`
+        : "wiki";
+      const stats = `${elapsed}s \u00b7 ${source}`;
+      const cols = process.stdout.columns || 80;
+      const pad = Math.max(0, cols - stats.length - 4);
+      process.stdout.write(`\n\n${dim("\u2500\u2500 " + stats + " " + "\u2500".repeat(pad))}\n`);
+
+      scheduler.onAgentEnd(event.messages as any[], doUpdate);
+    }
+
+    // ═══ Wiki throttle ═══════════════════════════════════════════════════
+    if (event.type === "message_end") {
+      scheduler.onMessageEnd(
+        event.message,
+        () => ({ messages: session.state.messages as any[] }),
+        doUpdate
+      );
+    }
+  });
+
+  return {
+    /** Set the question text for trace building (call before session.prompt) */
+    setQuestion(q: string) { lastQuestion = q; },
+    /** Wait for any pending wiki updates to finish */
+    flush() { return scheduler.flush(); },
+  };
+}
+
 // ── Wiki update scheduler ───────────────────────────────────────────────────
 
 class WikiUpdateScheduler {
@@ -165,13 +345,17 @@ class WikiUpdateScheduler {
   flush(): Promise<void> { return this.chain; }
 }
 
-// ── Main query function ─────────────────────────────────────────────────────
+// ── Session factory (shared by chat and one-shot query) ─────────────────────
 
-export async function query(
+export interface ChatSession {
+  session: AgentSession;
+  display: ReturnType<typeof subscribeDisplay>;
+}
+
+export async function createChat(
   folder: string,
-  question: string,
   options: { save?: boolean; authStorage?: AuthStorage; modelId?: string }
-): Promise<void> {
+): Promise<ChatSession> {
   const sourcesDir = join(folder, ".llm-kb", "wiki", "sources");
   const files = await readdir(sourcesDir);
   const mdFiles = files.filter((f) => f.endsWith(".md"));
@@ -226,175 +410,34 @@ export async function query(
     ...(model ? { model } : {}),
   });
 
-  session.setSessionName(`query: ${question}`);
-
-  const scheduler = new WikiUpdateScheduler(5, 3);
-
-  const buildTraceFromMessages = (messages: any[]): KBTrace | null => {
-    const lastAssistant = [...messages]
-      .reverse()
-      .find((m) => m.role === "assistant" && m.stopReason === "stop");
-    if (!lastAssistant) return null;
-    return {
-      sessionId: session.sessionId,
-      sessionFile: session.sessionFile ?? "",
-      timestamp: new Date().toISOString(),
-      mode: "query",
-      question,
-      answer: extractAnswerText(lastAssistant.content),
-      filesRead: extractFilesRead(messages),
-      filesAvailable: mdFiles,
-      filesSkipped: mdFiles.filter((f) => !extractFilesRead(messages).some((r) => r.endsWith(f))),
-      model: lastAssistant.model,
-    };
-  };
-
-  const doUpdate = async (messages: any[]) => {
-    const trace = buildTraceFromMessages(messages);
-    if (!trace) return;
-    await saveTrace(folder, trace);
-    await appendToQueryLog(folder, trace);
-    await updateWiki(folder, trace, options.authStorage);
-  };
-
-  // ── Display ─────────────────────────────────────────────────────────────
-  //
-  // Claude Web-style output:
-  //
-  //   ⟡ claude-sonnet-4-6
-  //
-  //   ▸ Thinking
-  //     The user wants to know about...
-  //
-  //   ▸ Reading  index.md
-  //   ▸ Reading  Indian Evidence Act.md
-  //
-  //   ──────────────────────────────────
-  //
-  //   ## The Indian Evidence Act...
-  //   (answer streams)
-  //
-  //   ── 4.2s · 2 files read ──────────
-  //
-
-  const dim = (s: string) => process.stdout.isTTY ? chalk.dim(s) : s;
-  const thinLine = () => {
-    const cols = process.stdout.columns || 80;
-    return dim("\u2500".repeat(cols));
-  };
-
-  let phase: "idle" | "thinking" | "tools" | "answer" = "idle";
-  let filesReadCount = 0;
-  const shownToolCalls = new Set<string>();
-  const startTime = Date.now();
-
-  session.subscribe((event) => {
-
-    // ═══ 1. Model header ═══════════════════════════════════════════════════
-    if (event.type === "turn_start" && phase === "idle") {
-      const modelName = options.modelId ?? "claude-sonnet-4-6";
-      process.stdout.write(dim(`\u27e1 ${modelName}`) + "\n");
-    }
-
-    // ═══ 2. Thinking ══════════════════════════════════════════════════════
-    if (event.type === "message_update") {
-      const ae = event.assistantMessageEvent;
-
-      if (ae.type === "thinking_start") {
-        process.stdout.write(dim("\n\u25b8 Thinking\n"));
-        phase = "thinking";
-      }
-
-      if (ae.type === "thinking_delta") {
-        process.stdout.write(dim(`  ${ae.delta}`));
-      }
-
-      if (ae.type === "thinking_end") {
-        process.stdout.write("\n");
-      }
-    }
-
-    // ═══ 3. Tool calls ════════════════════════════════════════════════════
-    // Show from toolcall_end (model decision) with fallback to tool_execution_start
-    if (event.type === "message_update") {
-      const ae = event.assistantMessageEvent as any;
-      if (ae.type === "toolcall_end" && ae.toolCall) {
-        const label = getToolLabel(ae.toolCall.name, ae.toolCall.arguments);
-        if (label) {
-          if (phase !== "tools") {
-            process.stdout.write("\n");
-            phase = "tools";
-          }
-          process.stdout.write(dim(`  \u25b8 ${label}`) + "\n");
-          shownToolCalls.add(ae.toolCall.id);
-          if (ae.toolCall.name === "read") filesReadCount++;
-        }
-      }
-    }
-
-    if (event.type === "tool_execution_start") {
-      const { toolCallId, toolName, args } = event as any;
-      if (!shownToolCalls.has(toolCallId)) {
-        const label = getToolLabel(toolName, args);
-        if (label) {
-          if (phase !== "tools") {
-            process.stdout.write("\n");
-            phase = "tools";
-          }
-          process.stdout.write(dim(`  \u25b8 ${label}`) + "\n");
-          shownToolCalls.add(toolCallId);
-          if (toolName === "read") filesReadCount++;
-        }
-      }
-    }
-
-    // ═══ 4. Answer ════════════════════════════════════════════════════════
-    if (event.type === "message_update") {
-      const ae = event.assistantMessageEvent;
-
-      if (ae.type === "text_start" && phase !== "answer") {
-        // Separator between processing steps and the final answer
-        if (phase === "thinking" || phase === "tools") {
-          process.stdout.write(`\n${thinLine()}\n\n`);
-        }
-        phase = "answer";
-      }
-
-      if (ae.type === "text_delta") {
-        process.stdout.write(ae.delta);
-      }
-    }
-
-    // ═══ 5. Completion bar ════════════════════════════════════════════════
-    if (event.type === "agent_end") {
-      const elapsed = ((Date.now() - startTime) / 1000).toFixed(1);
-      const source = filesReadCount > 0
-        ? `${filesReadCount} file${filesReadCount !== 1 ? "s" : ""} read`
-        : "wiki";
-      const stats = `${elapsed}s \u00b7 ${source}`;
-      const cols = process.stdout.columns || 80;
-      const pad = Math.max(0, cols - stats.length - 4);
-      process.stdout.write(`\n\n${dim("\u2500\u2500 " + stats + " " + "\u2500".repeat(pad))}\n`);
-
-      scheduler.onAgentEnd(event.messages as any[], doUpdate);
-    }
-
-    // ═══ Wiki update throttle ═════════════════════════════════════════════
-    if (event.type === "message_end") {
-      scheduler.onMessageEnd(
-        event.message,
-        () => ({ messages: session.state.messages as any[] }),
-        doUpdate
-      );
-    }
+  const display = subscribeDisplay(session, {
+    modelId: options.modelId,
+    authStorage: options.authStorage,
+    folder,
+    mdFiles,
   });
 
+  return { session, display };
+}
+
+// ── One-shot query (for `llm-kb query` command) ─────────────────────────────
+
+export async function query(
+  folder: string,
+  question: string,
+  options: { save?: boolean; authStorage?: AuthStorage; modelId?: string }
+): Promise<void> {
+  const { session, display } = await createChat(folder, options);
+
+  session.setSessionName(`query: ${question}`);
+  display.setQuestion(question);
   await session.prompt(question);
 
-  await scheduler.flush();
+  await display.flush();
   session.dispose();
 
   if (options.save) {
+    const sourcesDir = join(folder, ".llm-kb", "wiki", "sources");
     const { buildIndex } = await import("./indexer.js");
     await buildIndex(folder, sourcesDir, undefined, options.authStorage);
   }

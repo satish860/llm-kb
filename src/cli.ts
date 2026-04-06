@@ -6,7 +6,7 @@ import { parsePDF } from "./pdf.js";
 import { buildIndex } from "./indexer.js";
 import { startWatcher } from "./watcher.js";
 import { startSessionWatcher } from "./session-watcher.js";
-import { query } from "./query.js";
+import { query, createChat } from "./query.js";
 import { resolveKnowledgeBase } from "./resolve-kb.js";
 import { checkAuth, exitWithAuthError } from "./auth.js";
 import { ensureConfig, loadConfig } from "./config.js";
@@ -68,39 +68,31 @@ program
       const pdf = pdfs[i];
       const fullPath = join(root, pdf.path);
 
-      // Inline progress — overwrite same line
-      const progress = `  Parsing... ${i + 1}/${pdfs.length} — ${pdf.name}`;
-      process.stdout.write(`\r${progress.padEnd(80)}`);
+      const progress = `  Parsing... ${i + 1}/${pdfs.length} \u2014 ${pdf.name}`;
+      process.stdout.write(`\r${progress.padEnd(process.stdout.columns || 80)}`);
 
       try {
         const result = await parsePDF(fullPath, sourcesDir);
-        if (result.skipped) {
-          skipped++;
-        } else {
-          parsed++;
-        }
+        if (result.skipped) { skipped++; } else { parsed++; }
       } catch (err: any) {
         failed++;
         errors.push({ name: pdf.name, message: err.message });
       }
     }
 
-    // Clear progress line
-    process.stdout.write(`\r${"".padEnd(80)}\r`);
+    process.stdout.write(`\r${"".padEnd(process.stdout.columns || 80)}\r`);
 
-    // Summary
     const parts: string[] = [];
     if (parsed > 0) parts.push(chalk.green(`${parsed} parsed`));
     if (skipped > 0) parts.push(chalk.dim(`${skipped} skipped (up to date)`));
     if (failed > 0) parts.push(chalk.red(`${failed} failed`));
     console.log(`  ${parts.join(", ")}`);
 
-    // Show errors
     for (const err of errors) {
-      console.log(chalk.red(`    ✗ ${err.name} — ${err.message}`));
+      console.log(chalk.red(`    \u2717 ${err.name} \u2014 ${err.message}`));
     }
 
-    // Build index — skip if index.md is newer than all source files and nothing was re-parsed
+    // Build index \u2014 skip if up to date
     const indexFile = join(root, ".llm-kb", "wiki", "index.md");
     let indexUpToDate = false;
     if (parsed === 0 && existsSync(indexFile)) {
@@ -111,7 +103,7 @@ program
           sourceFiles.map((f) => stat(join(sourcesDir, f)).then((s) => s.mtimeMs))
         );
         indexUpToDate = sourceMtimes.every((mtime) => indexMtime >= mtime);
-      } catch { /* if anything fails, rebuild */ }
+      } catch { /* rebuild on error */ }
     }
 
     if (indexUpToDate) {
@@ -128,25 +120,32 @@ program
 
     console.log(`\n  ${chalk.dim("Output:")} ${sourcesDir}`);
 
-    // Start watching for new files + completed sessions
+    // Start file + session watchers
     startWatcher({ folder: root, sourcesDir, authStorage: auth.authStorage, indexModel: config.indexModel });
-    startSessionWatcher(root); // async, runs silently in background
+    startSessionWatcher(root);
 
-    // Interactive chat loop
+    // Create ONE persistent chat session for the entire run
+    const { session, display } = await createChat(root, {
+      authStorage: auth.authStorage,
+      modelId: config.queryModel,
+    });
+
+    // Interactive chat loop \u2014 same session, full conversation memory
     const rl = readline.createInterface({
       input: process.stdin,
       output: process.stdout,
-      terminal: true,
     });
 
-    rl.on("close", () => {
+    rl.on("close", async () => {
+      await display.flush();
+      session.dispose();
       console.log(chalk.dim("\n  Goodbye."));
       process.exit(0);
     });
 
     const hr = () => {
       const cols = process.stdout.columns || 80;
-      return chalk.hex("#c678dd")("─".repeat(cols));
+      return chalk.hex("#c678dd")("\u2500".repeat(cols));
     };
 
     const ask = () => {
@@ -156,15 +155,14 @@ program
         const q = input.trim();
         if (!q) { ask(); return; }
 
+        rl.pause();
+        display.setQuestion(q);
         try {
-          await query(root, q, {
-            authStorage: auth.authStorage,
-            modelId: config.queryModel,
-          });
+          await session.prompt(q);
         } catch (err: any) {
           console.error(chalk.red(`  Error: ${err.message}`));
         }
-
+        rl.resume();
         ask();
       });
     };
@@ -175,7 +173,7 @@ program
 
 program
   .command("query")
-  .description("Ask a question across your knowledge base")
+  .description("Ask a single question (non-interactive)")
   .argument("<question>", "Your question")
   .option("--folder <path>", "Path to document folder (auto-detects if omitted)")
   .option("--save", "Save the answer to wiki/outputs/ (research mode)")
@@ -184,7 +182,6 @@ program
     if (!auth.ok) exitWithAuthError();
 
     const root = resolveKnowledgeBase(options.folder || process.cwd());
-
     if (!root) {
       console.error(chalk.red("No knowledge base found. Run 'llm-kb run <folder>' first."));
       process.exit(1);
@@ -210,7 +207,6 @@ program
   .option("--folder <path>", "Path to document folder (auto-detects if omitted)")
   .action(async (options: { folder?: string }) => {
     const root = resolveKnowledgeBase(options.folder || process.cwd());
-
     if (!root) {
       console.error(chalk.red("No knowledge base found. Run 'llm-kb run <folder>' first."));
       process.exit(1);
@@ -223,31 +219,26 @@ program
     const indexFile  = join(root, ".llm-kb", "wiki", "index.md");
     const outputsDir = join(root, ".llm-kb", "wiki", "outputs");
 
-    // Sources
     let sourceCount = 0;
     let sourceBreakdown = "";
     try {
       const files = await readdir(sourcesDir);
-      const mdFiles = files.filter((f) => f.endsWith(".md"));
-      sourceCount = mdFiles.length;
+      sourceCount = files.filter((f) => f.endsWith(".md")).length;
       sourceBreakdown = `${sourceCount} parsed source${sourceCount !== 1 ? "s" : ""}`;
-    } catch { /* sources dir may not exist yet */ }
+    } catch {}
 
-    // Index last updated
     let indexAge = "not built yet";
     try {
       const s = await stat(indexFile);
       const diffMs = Date.now() - s.mtimeMs;
       const diffMin = Math.round(diffMs / 60000);
       indexAge = diffMin < 1 ? "just now" : diffMin < 60 ? `${diffMin} min ago` : `${Math.round(diffMin / 60)} hr ago`;
-    } catch { /* index may not exist */ }
+    } catch {}
 
-    // Outputs count
     let outputCount = 0;
     try {
-      const files = await readdir(outputsDir);
-      outputCount = files.filter((f) => f.endsWith(".md")).length;
-    } catch { /* outputs may not exist */ }
+      outputCount = (await readdir(outputsDir)).filter((f) => f.endsWith(".md")).length;
+    } catch {}
 
     console.log(`\n${chalk.bold("Knowledge Base Status")}`);
     console.log(`  ${chalk.dim("Folder:")}  ${root}`);
