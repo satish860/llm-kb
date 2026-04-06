@@ -68,9 +68,25 @@ With compile (proactive + reactive):
 
 ## Slices
 
-### Slice 1: Article compiler (`llm-kb compile`)
+### Slice 1: Article compiler (part of `run`)
 
-**What:** Read all source files, identify key concepts, write one article per concept.
+**What:** After index is built, compile concept articles from all sources.
+Not a separate command — just step 3.5 in the `run` flow:
+
+```
+llm-kb run ./docs
+  1. Scan files
+  2. Parse PDFs
+  3. Build index          ← Haiku summarises sources
+  4. Compile articles      ← Sonnet synthesises concepts (NEW)
+  5. Start watchers
+  6. Start chat            ← Agent reads articles, not source files
+```
+
+**Skip logic (same as index):**
+- If `articles/` exists AND `articles/index.md` is newer than all source files → skip
+- If any source is newer OR articles/ missing → compile
+- First run always compiles. Subsequent runs are instant.
 
 **Input:**
 ```
@@ -129,13 +145,14 @@ IPC had no equivalent. Mob killings prosecuted under general S.302...
 5. Agent writes articles/index.md catalog
 
 **Implementation:**
-- New command: `llm-kb compile` (or `llm-kb compile --folder ./docs`)
+- New function: `compileArticles(folder, sourcesDir, authStorage, modelId)`
+- Called from cli.ts `run` command, after buildIndex, before chat
 - Uses createAgentSession with read + write tools
 - AGENTS.md instructs the agent on article format, backlinks, source citations
 - Model: Sonnet (needs strong reasoning to synthesise across sources)
 
 **Definition of done:**
-- [ ] `llm-kb compile` reads all sources and writes articles/ directory
+- [ ] `run` compiles articles after index (with skip logic)
 - [ ] articles/index.md is a concept catalog with one-line descriptions
 - [ ] Each article has: overview, key details, source citations, related links
 - [ ] Articles are cross-referenced with [[article-name]] backlinks
@@ -168,37 +185,7 @@ Agent reads articles/index.md (concept catalog)
 
 ---
 
-### Slice 3: Auto-compile on first run
-
-**What:** If `articles/` doesn't exist when `llm-kb run` starts, compile automatically.
-
-**Flow:**
-```
-llm-kb run ./docs
-  Scanning...
-  9 parsed
-
-  Building index... (haiku)
-  Index built.
-
-  Compiling knowledge articles... (sonnet)     ← NEW
-  12 articles written to .llm-kb/wiki/articles/
-
-  Ready. Ask a question...
-```
-
-**Skip logic (like index):**
-- If articles/ exists AND is newer than all source files → skip
-- If any source is newer → recompile incrementally
-
-**Definition of done:**
-- [ ] First run auto-compiles articles
-- [ ] Subsequent runs skip if up to date
-- [ ] Status command shows article count
-
----
-
-### Slice 4: Incremental article updates
+### Slice 3: Incremental article updates
 
 **What:** When a new file is dropped in, don't recompile everything.
 Update only the 2-3 articles affected by the new content.
@@ -233,7 +220,7 @@ User drops "new-amendment-2024.pdf" into the folder
 
 ---
 
-### Slice 5: Eval — session analysis + article refinement
+### Slice 4: Eval — session analysis + article refinement
 
 **What:** Analyze session files to find quality issues and wiki gaps.
 Then fix the articles automatically.
@@ -304,7 +291,7 @@ INDEX ISSUES
 
 ---
 
-### Slice 6: The complete flywheel
+### Slice 5: The complete flywheel
 
 With all slices done, the full flywheel:
 
@@ -359,12 +346,11 @@ With all slices done, the full flywheel:
 
 | Slice | What | Effort | Priority |
 |---|---|---|---|
-| 1 | `llm-kb compile` | 2-3 hrs | 🔴 Do first |
+| 1 | Article compiler (in `run`) | 2-3 hrs | 🔴 Do first |
 | 2 | Query reads articles | 30 min | 🔴 Immediate follow-up |
-| 3 | Auto-compile on first run | 15 min | 🟡 Quick win |
-| 4 | Incremental article updates | 1-2 hrs | 🟡 This week |
-| 5 | `llm-kb eval` | 2-3 hrs | 🟡 This week |
-| 6 | Full flywheel verification | Testing | 🟢 After all slices |
+| 3 | Incremental article updates (watcher) | 1-2 hrs | 🟡 This week |
+| 4 | `llm-kb eval` (session analysis + auto-fix) | 2-3 hrs | 🔴 The big one |
+| 5 | Full flywheel verification | Testing | 🟢 After all slices |
 
 ---
 
