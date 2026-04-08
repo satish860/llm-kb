@@ -39,7 +39,7 @@ llm-kb run ./my-documents
 ```
 
 ```
-llm-kb v0.4.0
+llm-kb v0.4.1
 
 Scanning ./my-documents...
   Found 9 files (9 PDF)
@@ -140,7 +140,7 @@ Eval reads your session files and uses Haiku as a judge to find:
 | **Wasted reads** | Files read but never cited in the answer |
 | **Performance** | Wiki hit rate, avg duration, most-read files |
 
-The eval report includes actionable recommendations and generates `eval-insights.md` — a compact summary the system uses to self-correct.
+The eval report includes actionable recommendations and updates `.llm-kb/guidelines.md` — learned rules the agent reads on-demand during queries. You can also add your own rules to this file (see [Guidelines](#guidelines) below).
 
 ### Status — KB overview
 
@@ -159,27 +159,66 @@ Knowledge Base Status
   Auth:    Pi SDK
 ```
 
+## The Three-Layer Architecture
+
+The system separates **how to behave**, **what to know**, and **what went wrong** into three files with distinct lifecycles:
+
+```
+┌──────────────────────────────────────────────────────────────┐
+│  AGENTS.md (runtime — built by code, not on disk)        │
+│  How to answer: source list, tool patterns, citation     │
+│  rules. Points to guidelines.md for learned behaviour.   │
+└──────────────────────────────────────────────────────────────┘
+                              │
+            ┌─────────────────┴─────────────────┐
+            ▼                                   ▼
+┌────────────────────────────┐  ┌────────────────────────────┐
+│  wiki.md                     │  │  guidelines.md              │
+│  WHAT to know                │  │  HOW to behave better       │
+│                              │  │                              │
+│  Concept-organized knowledge │  │  Eval insights (auto)       │
+│  synthesized from sources.   │  │  + your custom rules.       │
+│  Updated after every query.  │  │  Read on-demand by agent.   │
+└────────────────────────────┘  └────────────────────────────┘
+       ▲                                    ▲
+       │ updated by wiki-updater             │ updated by eval
+       │                                      │
+┌──────┴─────────────────────────────────────────┴────────┐
+│  llm-kb eval                                              │
+│  Reads sessions → judges quality → updates guidelines.md  │
+│  + writes eval-report.md for humans                       │
+└──────────────────────────────────────────────────────────────┘
+```
+
+| Layer | File | Changes when | Written by |
+|---|---|---|---|
+| Architecture | AGENTS.md (runtime) | Code deploys | Developer |
+| Behaviour | `guidelines.md` | After eval / by you | Eval + user |
+| Knowledge | `wiki.md` | After every query | Wiki updater |
+
+The agent sees AGENTS.md in its system prompt (lean, stable). It reads `guidelines.md` and `wiki.md` on-demand via tool calls — progressive disclosure, not context bloat.
+
 ## The Data Flywheel
 
-Every query makes the system faster. This is the core loop:
+Every query makes the system faster. Every eval makes it smarter.
 
 ```
        ┌─────────────────┐
        │  User asks       │
        │  a question      │
-       └────────┬─────────┘
+       └────────┬────────┘
                 │
                 ▼
    ┌────────────────────────┐
-   │  Agent answers from    │
-   │  wiki (fast) or        │
-   │  source files (slow)   │
+   │  Agent checks wiki.md    │
+   │  + reads guidelines.md   │ ◄── on-demand, not forced
+   │  + reads source files     │
    └────────────┬───────────┘
                 │
                 ▼
    ┌────────────────────────┐
-   │  Wiki updated          │ ◄── Haiku merges new knowledge
-   │  (concept-organized)   │     into existing topics
+   │  Wiki updated          │ ◄── knowledge compounds
+   │  (concept-organized)   │
    └────────────┬───────────┘
                 │
                 ▼
@@ -190,9 +229,9 @@ Every query makes the system faster. This is the core loop:
                 │
                 ▼
    ┌────────────────────────┐
-   │  llm-kb eval           │ ◄── Finds gaps, errors, waste
-   │  analyzes sessions     │     Generates insights for
-   │  writes report         │     self-correction
+   │  llm-kb eval           │ ◄── behaviour compounds
+   │  analyzes sessions     │     updates guidelines.md
+   │  improves behaviour    │     with learned rules
    └────────────────────────┘
 ```
 
@@ -269,6 +308,35 @@ OCR_ENABLED=true llm-kb run ./docs                              # local Tesserac
 OCR_SERVER_URL="http://localhost:8080/ocr?key=KEY" llm-kb run .  # remote Azure OCR
 ```
 
+## Guidelines
+
+`guidelines.md` is the agent’s learned behaviour file. Eval writes the `## Eval Insights` section automatically. You can add your own rules below it — eval will never overwrite them.
+
+```markdown
+## Eval Insights (auto-generated 2026-04-07)
+
+### Wiki Gaps — add to wiki when users ask about these topics
+- Reserve requirements
+- Engine types
+
+### Behaviour Fixes
+- Double-check clause numbers against source text.
+
+### Performance
+- Wiki hit rate: 82% (target: 80%+)
+- Avg query time: 3.1s
+
+## My Rules
+
+- Always use Hindi transliterations for legal terms
+- Respond in bullet points for legal questions
+- For aviation leases: always check both lessee and lessor obligations
+```
+
+The agent reads this file on-demand — not on every query. It consults guidelines when unsure about citation accuracy, file selection, or when a question touches a topic that had issues before. This keeps the system prompt lean while making learned behaviour available when it matters.
+
+You can create `guidelines.md` manually before ever running eval. The agent will find it.
+
 ## What It Creates
 
 ```
@@ -276,7 +344,7 @@ OCR_SERVER_URL="http://localhost:8080/ocr?key=KEY" llm-kb run .  # remote Azure 
 ├── (your files — untouched)
 └── .llm-kb/
     ├── config.json           ← model configuration
-    ├── eval-insights.md      ← agent self-correction insights (from eval)
+    ├── guidelines.md         ← learned rules from eval + your custom rules
     ├── sessions/             ← conversation history (JSONL)
     ├── traces/               ← per-query traces (JSON)
     │   └── .processed        ← prevents re-processing on restart
@@ -317,7 +385,7 @@ npm install
 npm run build
 npm link
 
-npm test              # 38 tests
+npm test              # 42 tests
 npm run test:watch    # vitest watch mode
 
 llm-kb run ./test-folder

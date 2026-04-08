@@ -1,6 +1,7 @@
 import { getModels, completeSimple } from "@mariozechner/pi-ai";
 import { AuthStorage } from "@mariozechner/pi-coding-agent";
 import { readFile, readdir, writeFile, mkdir } from "node:fs/promises";
+import { readFileSync } from "node:fs";
 import { existsSync } from "node:fs";
 import { join, basename } from "node:path";
 import { homedir } from "node:os";
@@ -525,11 +526,36 @@ export async function runEval(
   const report = buildReport(result);
   await writeFile(join(outputsDir, "eval-report.md"), report, "utf-8");
 
-  // Save insights to a file that query.ts reads and injects into AGENTS.md
-  await writeFile(join(kbRoot, ".llm-kb", "eval-insights.md"), result.agentsInsights, "utf-8");
-  log("Insights saved to .llm-kb/eval-insights.md (injected into next query)");
+  // Save insights to guidelines.md (section-aware: preserve user rules)
+  const guidelinesPath = join(kbRoot, ".llm-kb", "guidelines.md");
+  await writeGuidelines(guidelinesPath, result.agentsInsights);
+  log("Insights saved to .llm-kb/guidelines.md (agent reads on-demand)");
 
   return result;
+}
+
+// ── Guidelines (section-aware write) ────────────────────────────────────────
+
+const EVAL_SECTION_START = "## Eval Insights";
+const EVAL_SECTION_RE = /## Eval Insights[\s\S]*?(?=\n## |$)/;
+
+export async function writeGuidelines(path: string, evalSection: string): Promise<void> {
+  let existing = "";
+  try { existing = await readFile(path, "utf-8"); } catch {}
+
+  if (!existing) {
+    // First time — just write the eval section
+    await writeFile(path, evalSection, "utf-8");
+    return;
+  }
+
+  if (EVAL_SECTION_RE.test(existing)) {
+    // Replace existing eval section, preserve everything else
+    await writeFile(path, existing.replace(EVAL_SECTION_RE, evalSection.trim()), "utf-8");
+  } else {
+    // File exists but no eval section — prepend it
+    await writeFile(path, evalSection + "\n\n" + existing, "utf-8");
+  }
 }
 
 // ── Helpers ─────────────────────────────────────────────────────────────────

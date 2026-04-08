@@ -122,6 +122,13 @@ function buildQueryAgents(sourceFiles: string[], save: boolean, wikiContent: str
     `- Read the FULL source file, not just the beginning (for .md sources)`,
     `- For non-PDF files, extract ONLY relevant sections — never dump entire files`,
     `- Prefer primary sources over previous analyses`,
+    ``,
+    `## Guidelines`,
+    `A guidelines file may exist at .llm-kb/guidelines.md with learned rules from`,
+    `past evaluations and user preferences. Read it when:`,
+    `- You're unsure about citation accuracy or format`,
+    `- You're about to read source files (guidelines may suggest using wiki instead)`,
+    `- The question touches a topic that may have had issues in past evaluations`,
   ];
 
   if (save) {

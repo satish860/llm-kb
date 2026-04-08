@@ -1,10 +1,14 @@
 {
   "name": "llm-kb",
-  "version": "0.4.0",
+  "version": "0.4.1",
   "description": "LLM-powered knowledge base. Drop documents, build a wiki, ask questions. Inspired by Karpathy.",
   "bin": {
     "llm-kb": "./bin/cli.js"
   },
+  "files": [
+    "bin/**",
+    "README.md"
+  ],
   "type": "module",
   "scripts": {
     "build": "tsup src/cli.ts --format esm --out-dir bin --clean",
