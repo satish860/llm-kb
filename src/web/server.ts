@@ -281,6 +281,14 @@ export async function startWebUI(options: WebUIOptions): Promise<void> {
     console.log(`\n  🌐 llm-kb web UI running at http://localhost:${port}\n`);
   });
 
+  server.on("error", (err: any) => {
+    if (err.code === "EADDRINUSE") {
+      console.error(`\n  ❌ Port ${port} is already in use. Either:\n     - Close the other llm-kb instance\n     - Use a different port: llm-kb ui <folder> --port 3948\n`);
+      process.exit(1);
+    }
+    throw err;
+  });
+
   injectWebSocket(server);
 
   // Auto-open browser
