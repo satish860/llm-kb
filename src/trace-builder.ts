@@ -2,11 +2,20 @@ import { readFile, writeFile, mkdir, readdir } from "node:fs/promises";
 import { existsSync } from "node:fs";
 import { join, basename as pathBasename } from "node:path";
 
+export interface TracePageBBox {
+  page: number;
+  x: number;
+  y: number;
+  width: number;
+  height: number;
+}
+
 export interface TraceCitation {
   file: string;
   page: number;
   quote: string;
   bbox?: { x: number; y: number; width: number; height: number };
+  pages?: TracePageBBox[];   // multi-page bboxes when quote spans pages
 }
 
 export interface KBTrace {

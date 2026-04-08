@@ -45,6 +45,38 @@ CITATIONS:
     expect(result.citations[0].page).toBe(5);
   });
 
+  it("extracts multi-page citations with pages array", () => {
+    const response = `Answer [1]
+
+CITATIONS:
+[1] file: "doc.pdf", pages: [17, 18], quote: "text spanning two pages", bbox: [{page: 17, x: 100, y: 750, width: 400, height: 14}, {page: 18, x: 100, y: 107, width: 350, height: 14}]`;
+
+    const result = parseCitations(response);
+    expect(result.citations).toHaveLength(1);
+    expect(result.citations[0].page).toBe(17);
+    expect(result.citations[0].pages).toHaveLength(2);
+    expect(result.citations[0].pages![0]).toEqual({ page: 17, x: 100, y: 750, width: 400, height: 14 });
+    expect(result.citations[0].pages![1]).toEqual({ page: 18, x: 100, y: 107, width: 350, height: 14 });
+    expect(result.citations[0].bbox).toBeUndefined();
+  });
+
+  it("handles mix of single and multi-page citations", () => {
+    const response = `Answer [1][2]
+
+CITATIONS:
+[1] file: "a.pdf", page: 3, quote: "single page", bbox: {x: 10, y: 20, width: 100, height: 14}
+[2] file: "b.pdf", pages: [5, 6], quote: "spans pages", bbox: [{page: 5, x: 50, y: 800, width: 200, height: 14}, {page: 6, x: 50, y: 100, width: 180, height: 14}]`;
+
+    const result = parseCitations(response);
+    expect(result.citations).toHaveLength(2);
+    expect(result.citations[0].page).toBe(3);
+    expect(result.citations[0].bbox).toBeDefined();
+    expect(result.citations[0].pages).toBeUndefined();
+    expect(result.citations[1].page).toBe(5);
+    expect(result.citations[1].pages).toHaveLength(2);
+    expect(result.citations[1].bbox).toBeUndefined();
+  });
+
   it("returns full response when no CITATIONS block", () => {
     const response = "Just a plain answer.";
     const result = parseCitations(response);

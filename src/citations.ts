@@ -11,11 +11,20 @@ export interface BoundingBox {
   height: number;
 }
 
+export interface PageBBox {
+  page: number;
+  x: number;
+  y: number;
+  width: number;
+  height: number;
+}
+
 export interface CitationRecord {
   file: string;
-  page: number;
+  page: number;              // primary page (first page if multi-page)
   quote: string;
-  bbox?: { x: number; y: number; width: number; height: number };
+  bbox?: BoundingBox;        // single-page bbox (backward compat)
+  pages?: PageBBox[];        // multi-page bboxes when quote spans pages
 }
 
 export interface MatchedCitation extends CitationRecord {
@@ -68,32 +77,69 @@ export function parseCitations(agentResponse: string): ParseResult {
 
   const citations: CitationRecord[] = [];
 
-  // Match each citation line:
-  // [N] file: "...", page: N, quote: "...", bbox: {x: N, y: N, width: N, height: N}
-  // Also handles lines without bbox, or with - prefix
-  const lineRe = /^\s*(?:-\s*)?(?:\[\d+\]\s*)?file:\s*"([^"]+)"\s*,\s*page:\s*(\d+)\s*,\s*quote:\s*"([^"]+)"(?:\s*,\s*bbox:\s*\{([^}]+)\})?/gm;
+  // Match each citation line — handles two formats:
+  // Single page: [N] file: "...", page: N, quote: "...", bbox: {x: N, y: N, width: N, height: N}
+  // Multi page:  [N] file: "...", pages: [N, M], quote: "...", bbox: [{page: N, ...}, {page: M, ...}]
+  const lineRe = /^\s*(?:-\s*)?(?:\[\d+\]\s*)?file:\s*"([^"]+)"\s*,\s*page(s)?:\s*(\[[^\]]+\]|\d+)\s*,\s*quote:\s*"([^"]+)"(.*)/gm;
   let match;
   while ((match = lineRe.exec(citationsBlock)) !== null) {
-    const citation: CitationRecord = {
-      file: match[1],
-      page: parseInt(match[2], 10),
-      quote: match[3],
-    };
+    const file = match[1];
+    const isMultiPage = match[2] === "s";
+    const pageStr = match[3].trim();
+    const quote = match[4];
+    const rest = match[5] || "";
 
-    // Parse bbox if present: {x: N, y: N, width: N, height: N}
-    if (match[4]) {
-      const bboxStr = match[4];
-      const xM = bboxStr.match(/x:\s*([\d.]+)/);
-      const yM = bboxStr.match(/y:\s*([\d.]+)/);
-      const wM = bboxStr.match(/width:\s*([\d.]+)/);
-      const hM = bboxStr.match(/height:\s*([\d.]+)/);
-      if (xM && yM && wM && hM) {
-        citation.bbox = {
-          x: parseFloat(xM[1]),
-          y: parseFloat(yM[1]),
-          width: parseFloat(wM[1]),
-          height: parseFloat(hM[1]),
-        };
+    const citation: CitationRecord = { file, page: 0, quote };
+
+    if (isMultiPage) {
+      // pages: [17, 18]
+      const pageNums = pageStr.replace(/[\[\]]/g, "").split(/\s*,\s*/).map(Number).filter(n => !isNaN(n));
+      citation.page = pageNums[0] || 0;
+
+      // Parse array bbox: [{page: 17, x: ..., y: ..., width: ..., height: ...}, ...]
+      const bboxArrayMatch = rest.match(/bbox:\s*\[([^\]]+)\]/);
+      if (bboxArrayMatch) {
+        const entries = bboxArrayMatch[1].split(/\}\s*,\s*\{/);
+        const pageBBoxes: PageBBox[] = [];
+        for (const entry of entries) {
+          const clean = entry.replace(/[{}]/g, "");
+          const pM = clean.match(/page:\s*(\d+)/);
+          const xM = clean.match(/x:\s*([\d.]+)/);
+          const yM = clean.match(/y:\s*([\d.]+)/);
+          const wM = clean.match(/width:\s*([\d.]+)/);
+          const hM = clean.match(/height:\s*([\d.]+)/);
+          if (pM && xM && yM && wM && hM) {
+            pageBBoxes.push({
+              page: parseInt(pM[1]),
+              x: parseFloat(xM[1]),
+              y: parseFloat(yM[1]),
+              width: parseFloat(wM[1]),
+              height: parseFloat(hM[1]),
+            });
+          }
+        }
+        if (pageBBoxes.length > 0) citation.pages = pageBBoxes;
+      }
+    } else {
+      // page: 3
+      citation.page = parseInt(pageStr, 10) || 0;
+
+      // Parse single bbox: {x: N, y: N, width: N, height: N}
+      const bboxMatch = rest.match(/bbox:\s*\{([^}]+)\}/);
+      if (bboxMatch) {
+        const bboxStr = bboxMatch[1];
+        const xM = bboxStr.match(/x:\s*([\d.]+)/);
+        const yM = bboxStr.match(/y:\s*([\d.]+)/);
+        const wM = bboxStr.match(/width:\s*([\d.]+)/);
+        const hM = bboxStr.match(/height:\s*([\d.]+)/);
+        if (xM && yM && wM && hM) {
+          citation.bbox = {
+            x: parseFloat(xM[1]),
+            y: parseFloat(yM[1]),
+            width: parseFloat(wM[1]),
+            height: parseFloat(hM[1]),
+          };
+        }
       }
     }
 
