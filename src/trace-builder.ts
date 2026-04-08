@@ -2,6 +2,13 @@ import { readFile, writeFile, mkdir, readdir } from "node:fs/promises";
 import { existsSync } from "node:fs";
 import { join, basename as pathBasename } from "node:path";
 
+export interface TraceCitation {
+  file: string;
+  page: number;
+  quote: string;
+  bbox?: { x: number; y: number; width: number; height: number };
+}
+
 export interface KBTrace {
   sessionId: string;
   sessionFile: string;
@@ -9,6 +16,8 @@ export interface KBTrace {
   mode: "query" | "index" | "unknown";
   question?: string;
   answer?: string;
+  answerWithoutCitations?: string;
+  citations?: TraceCitation[];
   filesRead: string[];
   filesAvailable: string[];
   filesSkipped: string[];

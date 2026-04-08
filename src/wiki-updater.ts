@@ -3,7 +3,7 @@ import { AuthStorage } from "@mariozechner/pi-coding-agent";
 import { existsSync } from "node:fs";
 import { readFile, writeFile, mkdir } from "node:fs/promises";
 import { join } from "node:path";
-import type { KBTrace } from "./trace-builder.js";
+import type { KBTrace, TraceCitation } from "./trace-builder.js";
 import { resolveModel, resolveApiKey as resolveApiKeyFromProvider } from "./model-resolver.js";
 
 async function resolveApiKey(authStorage?: AuthStorage): Promise<string | undefined> {
@@ -12,13 +12,26 @@ async function resolveApiKey(authStorage?: AuthStorage): Promise<string | undefi
   return process.env.ANTHROPIC_API_KEY;
 }
 
+function formatCitationsForWiki(citations: TraceCitation[]): string {
+  if (citations.length === 0) return "";
+  const lines = citations.map((c, i) =>
+    `  [${i + 1}] ${c.file}, p.${c.page}: "${c.quote}"`
+  );
+  return `\n\n**Verified citations (preserve page numbers in wiki):**\n${lines.join("\n")}`;
+}
+
 function buildPrompt(
   question: string,
   answer: string,
   sources: string,
   date: string,
-  currentWiki: string
+  currentWiki: string,
+  citations?: TraceCitation[]
 ): string {
+  const citationsSection = citations && citations.length > 0
+    ? formatCitationsForWiki(citations)
+    : "";
+
   const rules = `Rules for wiki structure:
 - Use ## for CONCEPTS and TOPICS — NOT source file names
   Good: "## Electronic Evidence", "## Mob Lynching", "## Burden of Proof"
@@ -28,7 +41,8 @@ function buildPrompt(
 - If knowledge from this Q&A fits an existing concept, ADD to it — never duplicate
 - If it's a genuinely new concept, create a new ## section
 - Be concise: bullet points for lists, short prose for explanations
-- Include source citations inline: (Source: filename, p.X)
+- ALWAYS include source citations with page numbers inline: (Source: filename, p.X)
+- Every factual claim must have a page-level citation — this is critical for verification
 - Add cross-references where concepts relate: See also: [[Other Concept]]
 - End each ## section with: *Sources: file1, file2 · date*
 - Separate ## sections with: ---`;
@@ -45,7 +59,7 @@ ${currentWiki}
 **Date:** ${date}
 
 **Answer:**
-${answer}
+${answer}${citationsSection}
 
 ---
 
@@ -63,7 +77,7 @@ Return ONLY the complete updated wiki markdown. No explanation.`;
 **Date:** ${date}
 
 **Answer:**
-${answer}
+${answer}${citationsSection}
 
 ---
 
@@ -101,7 +115,9 @@ export async function updateWiki(
     .join(", ") || "unknown";
 
   const date = new Date(trace.timestamp).toISOString().slice(0, 10);
-  const prompt = buildPrompt(trace.question, trace.answer, sources, date, currentWiki);
+  // Use clean answer (without CITATIONS block) + pass structured citations separately
+  const answer = trace.answerWithoutCitations ?? trace.answer;
+  const prompt = buildPrompt(trace.question, answer, sources, date, currentWiki, trace.citations);
 
   const apiKey = await resolveApiKey(authStorage);
   if (!apiKey) return;
@@ -112,7 +128,7 @@ export async function updateWiki(
   const result = await completeSimple(
     model,
     {
-      systemPrompt: "You are a precise knowledge librarian. Organize information by CONCEPT, not by source file. Synthesize knowledge from multiple sources into unified topic articles. Return only clean markdown.",
+      systemPrompt: "You are a precise knowledge librarian. Organize information by CONCEPT, not by source file. Synthesize knowledge from multiple sources into unified topic articles. ALWAYS preserve page-level citations (Source: filename, p.X) for every fact. Return only clean markdown.",
       messages: [{ role: "user", content: prompt, timestamp: Date.now() }],
     },
     { apiKey }

@@ -22,6 +22,29 @@ CITATIONS:
     expect(result.citations[1].page).toBe(12);
   });
 
+  it("extracts bbox when present", () => {
+    const response = `Answer [1]
+
+CITATIONS:
+[1] file: "doc.md", page: 1, quote: "some text", bbox: {x: 133, y: 237, width: 395, height: 46}`;
+
+    const result = parseCitations(response);
+    expect(result.citations).toHaveLength(1);
+    expect(result.citations[0].bbox).toEqual({ x: 133, y: 237, width: 395, height: 46 });
+  });
+
+  it("handles citations without bbox", () => {
+    const response = `Answer [1]
+
+CITATIONS:
+[1] file: "doc.md", page: 5, quote: "no bbox here"`;
+
+    const result = parseCitations(response);
+    expect(result.citations).toHaveLength(1);
+    expect(result.citations[0].bbox).toBeUndefined();
+    expect(result.citations[0].page).toBe(5);
+  });
+
   it("returns full response when no CITATIONS block", () => {
     const response = "Just a plain answer.";
     const result = parseCitations(response);

@@ -15,6 +15,7 @@ export interface CitationRecord {
   file: string;
   page: number;
   quote: string;
+  bbox?: { x: number; y: number; width: number; height: number };
 }
 
 export interface MatchedCitation extends CitationRecord {
@@ -68,16 +69,35 @@ export function parseCitations(agentResponse: string): ParseResult {
   const citations: CitationRecord[] = [];
 
   // Match each citation line:
-  // - [N] file: "...", page: N, quote: "..."
-  // - file: "...", page: N, quote: "..."
-  const lineRe = /^\s*(?:-\s*)?(?:\[\d+\]\s*)?file:\s*"([^"]+)"\s*,\s*page:\s*(\d+)\s*,\s*quote:\s*"([^"]+)"/gm;
+  // [N] file: "...", page: N, quote: "...", bbox: {x: N, y: N, width: N, height: N}
+  // Also handles lines without bbox, or with - prefix
+  const lineRe = /^\s*(?:-\s*)?(?:\[\d+\]\s*)?file:\s*"([^"]+)"\s*,\s*page:\s*(\d+)\s*,\s*quote:\s*"([^"]+)"(?:\s*,\s*bbox:\s*\{([^}]+)\})?/gm;
   let match;
   while ((match = lineRe.exec(citationsBlock)) !== null) {
-    citations.push({
+    const citation: CitationRecord = {
       file: match[1],
       page: parseInt(match[2], 10),
       quote: match[3],
-    });
+    };
+
+    // Parse bbox if present: {x: N, y: N, width: N, height: N}
+    if (match[4]) {
+      const bboxStr = match[4];
+      const xM = bboxStr.match(/x:\s*([\d.]+)/);
+      const yM = bboxStr.match(/y:\s*([\d.]+)/);
+      const wM = bboxStr.match(/width:\s*([\d.]+)/);
+      const hM = bboxStr.match(/height:\s*([\d.]+)/);
+      if (xM && yM && wM && hM) {
+        citation.bbox = {
+          x: parseFloat(xM[1]),
+          y: parseFloat(yM[1]),
+          width: parseFloat(wM[1]),
+          height: parseFloat(hM[1]),
+        };
+      }
+    }
+
+    citations.push(citation);
   }
 
   return { answer, citations };

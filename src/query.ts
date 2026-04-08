@@ -12,7 +12,8 @@ import { resolveModel } from "./model-resolver.js";
 import { readdir, mkdir, readFile } from "node:fs/promises";
 import { existsSync } from "node:fs";
 import { createKBSession, continueKBSession } from "./session-store.js";
-import { saveTrace, appendToQueryLog, KBTrace } from "./trace-builder.js";
+import { saveTrace, appendToQueryLog, type KBTrace } from "./trace-builder.js";
+import { parseCitations } from "./citations.js";
 import { updateWiki } from "./wiki-updater.js";
 import { join, basename } from "node:path";
 import chalk from "chalk";
@@ -214,10 +215,15 @@ function subscribeDisplay(
     const last = [...messages].reverse().find((m) => m.role === "assistant" && m.stopReason === "stop");
     if (!last) return null;
     const filesRead = extractFilesRead(messages);
+    const fullAnswer = extractAnswerText(last.content);
+    const parsed = parseCitations(fullAnswer);
     return {
       sessionId: session.sessionId, sessionFile: session.sessionFile ?? "",
       timestamp: new Date().toISOString(), mode: "query", question: lastQuestion,
-      answer: extractAnswerText(last.content), filesRead,
+      answer: fullAnswer,
+      answerWithoutCitations: parsed.answer,
+      citations: parsed.citations.length > 0 ? parsed.citations : undefined,
+      filesRead,
       filesAvailable: opts.mdFiles,
       filesSkipped: opts.mdFiles.filter((f) => !filesRead.some((r) => r.endsWith(f))),
       model: last.model,
