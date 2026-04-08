@@ -39,7 +39,7 @@ llm-kb run ./my-documents
 ```
 
 ```
-llm-kb v0.4.2
+llm-kb v0.5.0
 
 Scanning ./my-documents...
   Found 9 files (9 PDF)
