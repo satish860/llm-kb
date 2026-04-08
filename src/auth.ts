@@ -28,7 +28,8 @@ export function checkAuth(): AuthResult | AuthFailure {
   const piAuthPath = join(homedir(), ".pi", "agent", "auth.json");
 
   if (existsSync(piAuthPath)) {
-    return { ok: true, method: "pi-sdk" };
+    const authStorage = AuthStorage.create();
+    return { ok: true, method: "pi-sdk", authStorage };
   }
 
   if (process.env.ANTHROPIC_API_KEY) {
