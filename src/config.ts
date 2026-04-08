@@ -2,8 +2,8 @@ import { existsSync } from "node:fs";
 import { readFile, writeFile, mkdir } from "node:fs/promises";
 import { join } from "node:path";
 
-export const DEFAULT_INDEX_MODEL = "claude-haiku-4-5";
-export const DEFAULT_QUERY_MODEL = "claude-sonnet-4-6";
+export const DEFAULT_INDEX_MODEL = "llama3";
+export const DEFAULT_QUERY_MODEL = "llama3";
 
 export interface KBConfig {
   indexModel: string;
