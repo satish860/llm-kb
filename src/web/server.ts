@@ -9,7 +9,7 @@ import { fileURLToPath } from "node:url";
 import { dirname } from "node:path";
 import { exec } from "node:child_process";
 import type { AuthStorage } from "@mariozechner/pi-coding-agent";
-import { createWebChatSession } from "./bridge.js";
+import { createOllamaDirectSession } from "./ollama-direct.js";
 
 // ── Types ───────────────────────────────────────────────────────────────────
 
@@ -75,7 +75,12 @@ export async function startWebUI(options: WebUIOptions): Promise<void> {
       } catch {}
     }
 
-    return c.json({ sourceCount, wikiExists, wikiConcepts, folder });
+    // Include model/provider info for UI badge
+    const modelId = options.modelId || "llama3.2";
+    const isOllama = !process.env.ANTHROPIC_API_KEY;
+    const provider = isOllama ? "ollama" : "anthropic";
+
+    return c.json({ sourceCount, wikiExists, wikiConcepts, folder, modelId, provider });
   });
 
   // ── API: Sources ──────────────────────────────────────────────────────
@@ -215,7 +220,7 @@ export async function startWebUI(options: WebUIOptions): Promise<void> {
   // ── WebSocket: Chat ───────────────────────────────────────────────────
 
   app.get("/ws/chat", upgradeWebSocket((c) => {
-    let chatSession: Awaited<ReturnType<typeof createWebChatSession>> | null = null;
+    let chatSession: Awaited<ReturnType<typeof createOllamaDirectSession>> | null = null;
     let creating = false;
     let wsRef: any = null;
 
@@ -225,19 +230,18 @@ export async function startWebUI(options: WebUIOptions): Promise<void> {
         console.log("[ws] Client connected");
         ws.send(JSON.stringify({ type: "connected", message: "llm-kb web UI ready" }));
 
-        // Create agent session in background
+        // Create direct Ollama session in background
         creating = true;
-        createWebChatSession(folder, {
+        createOllamaDirectSession(folder, {
           send(data: string) {
             try { wsRef?.send(data); } catch (e) { console.error("[ws] send error:", e); }
           },
         }, {
-          authStorage: options.authStorage,
           modelId: options.modelId,
         }).then((session) => {
           chatSession = session;
           creating = false;
-          console.log("[ws] Agent session ready");
+          console.log("[ws] Ollama direct session ready");
           try { wsRef?.send(JSON.stringify({ type: "ready" })); } catch {}
         }).catch((err: any) => {
           creating = false;
