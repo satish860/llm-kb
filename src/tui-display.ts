@@ -3,6 +3,7 @@ import {
   type MarkdownTheme, type Component, Input,
 } from "@mariozechner/pi-tui";
 import chalk from "chalk";
+import type { CitationRecord } from "./citations.js";
 
 // ── Markdown theme ──────────────────────────────────────────────────────────
 
@@ -73,6 +74,7 @@ export class ChatDisplay {
   private currentMd: Markdown | null = null;       // active text block
   private currentThinking: Text | null = null;      // active thinking block
   private hadSeparator = false;                     // has a ─── line been drawn?
+  private accumulatedAnswer = "";                    // full answer text for citation stripping
 
   private filesReadCount = 0;
   private shownToolCalls = new Set<string>();
@@ -141,6 +143,8 @@ export class ChatDisplay {
     this.currentMd = null;
     this.currentThinking = null;
     this.hadSeparator = false;
+
+    this.accumulatedAnswer = "";
 
     this.currentResponse = new Container();
     this.currentResponse.addChild(new Spacer(1));
@@ -243,16 +247,80 @@ export class ChatDisplay {
 
     const prev = (this.currentMd as any).text ?? "";
     this.currentMd.setText(prev + text);
+    this.accumulatedAnswer += text;
     this.tui.requestRender();
   }
 
-  showCompletion(): void {
+  /** Strip CITATIONS block from answer and show formatted citation footer */
+  showCitations(citations: CitationRecord[]): void {
+    if (!this.currentResponse || citations.length === 0) return;
+
+    // Strip the CITATIONS block from the displayed answer
+    if (this.currentMd) {
+      const citIdx = this.accumulatedAnswer.search(/^CITATIONS:\s*$/im);
+      if (citIdx >= 0) {
+        const clean = this.accumulatedAnswer.slice(0, citIdx).trimEnd();
+        this.currentMd.setText(clean);
+      }
+    }
+
+    // Add citation footer
+    this.currentResponse.addChild(new Spacer(1));
+    this.currentResponse.addChild(new HRule());
+
+    for (let i = 0; i < citations.length; i++) {
+      const c = citations[i];
+      const num = chalk.bold(`  [${i + 1}]`);
+      const file = chalk.cyan(c.file);
+      const pageStr = c.pages && c.pages.length > 0
+        ? `p.${c.pages.map(p => p.page).join("-")}`
+        : `p.${c.page}`;
+
+      // Status icon
+      let status: string;
+      if (c.bbox || (c.pages && c.pages.length > 0)) {
+        const bboxInfo = c.pages && c.pages.length > 0
+          ? `(${c.pages.length} pages)`
+          : c.bbox
+            ? `(${c.bbox.x},${c.bbox.y} \u2192 ${Math.round(c.bbox.x + c.bbox.width)},${Math.round(c.bbox.y + c.bbox.height)})`
+            : "";
+        status = chalk.green(`\u2705 bbox ${bboxInfo}`);
+      } else {
+        status = chalk.yellow(`\u26a0\ufe0f  no bbox`);
+      }
+
+      const quote = c.quote.length > 60 ? c.quote.slice(0, 57) + "..." : c.quote;
+
+      this.currentResponse.addChild(
+        new Text(`${num} \ud83d\udcc4 ${file}, ${pageStr}`, 0, 0)
+      );
+      this.currentResponse.addChild(
+        new Text(chalk.dim(`      "${quote}"`), 0, 0)
+      );
+      this.currentResponse.addChild(
+        new Text(`      ${status}`, 0, 0)
+      );
+    }
+
+    this.tui.requestRender();
+  }
+
+  showCompletion(citations?: CitationRecord[]): void {
     if (!this.currentResponse) return;
+
+    // Show citation footer if we have citations
+    if (citations && citations.length > 0) {
+      this.showCitations(citations);
+    }
+
     const elapsed = ((Date.now() - this.startTime) / 1000).toFixed(1);
     const source = this.filesReadCount > 0
       ? `${this.filesReadCount} file${this.filesReadCount !== 1 ? "s" : ""} read`
       : "wiki";
-    const stats = `\u2500\u2500 ${elapsed}s \u00b7 ${source} `;
+    const citCount = citations && citations.length > 0
+      ? ` \u00b7 ${citations.length} citation${citations.length !== 1 ? "s" : ""}`
+      : "";
+    const stats = `\u2500\u2500 ${elapsed}s \u00b7 ${source}${citCount} `;
 
     const completion: Component = {
       invalidate() {},

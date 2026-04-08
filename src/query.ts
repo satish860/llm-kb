@@ -347,15 +347,38 @@ function subscribeDisplay(
 
     // ── Completion ───────────────────────────────────────────────────────
     if (event.type === "agent_end") {
-      if (ui) { ui.showCompletion(); ui.enableInput(); }
+      // Parse citations from the full answer
+      const trace = buildTrace(event.messages as any[]);
+      const citations = trace?.citations ?? [];
+
+      if (ui) { ui.showCompletion(citations); ui.enableInput(); }
       else {
+        // Stdout mode: show citation footer
+        if (citations.length > 0) {
+          process.stdout.write(`\n${dim("\u2500\u2500 Citations " + "\u2500".repeat(Math.max(0, (process.stdout.columns || 80) - 14)))}\n`);
+          for (let i = 0; i < citations.length; i++) {
+            const c = citations[i];
+            const pageStr = c.pages && c.pages.length > 0
+              ? `p.${c.pages.map((p: any) => p.page).join("-")}`
+              : `p.${c.page}`;
+            const hasBbox = c.bbox || (c.pages && c.pages.length > 0);
+            const icon = hasBbox ? "\u2705" : "\u26a0\ufe0f";
+            const quote = c.quote.length > 60 ? c.quote.slice(0, 57) + "..." : c.quote;
+            process.stdout.write(`\n  ${chalk.bold(`[${i + 1}]`)} \ud83d\udcc4 ${c.file}, ${pageStr}\n`);
+            process.stdout.write(dim(`      "${quote}"`) + "\n");
+            process.stdout.write(`      ${icon} ${hasBbox ? "bbox" : "no bbox"}\n`);
+          }
+        }
+
         const elapsed = ((Date.now() - startTime) / 1000).toFixed(1);
         const source = filesReadCount > 0
           ? `${filesReadCount} file${filesReadCount !== 1 ? "s" : ""} read` : "wiki";
-        const stats = `${elapsed}s \u00b7 ${source}`;
+        const citCount = citations.length > 0
+          ? ` \u00b7 ${citations.length} citation${citations.length !== 1 ? "s" : ""}` : "";
+        const stats = `${elapsed}s \u00b7 ${source}${citCount}`;
         const cols = process.stdout.columns || 80;
         const pad = Math.max(0, cols - stats.length - 4);
-        process.stdout.write(`\n\n${dim("\u2500\u2500 " + stats + " " + "\u2500".repeat(pad))}\n`);
+        process.stdout.write(`\n${dim("\u2500\u2500 " + stats + " " + "\u2500".repeat(pad))}\n`);
       }
       scheduler.onAgentEnd(event.messages as any[], doUpdate);
     }
