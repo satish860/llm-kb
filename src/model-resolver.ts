@@ -19,11 +19,11 @@ const OPENROUTER_TO_ANTHROPIC = Object.fromEntries(
 ) as Record<string, string>;
 
 const PURPOSE_FALLBACKS: Record<ModelPurpose, string[]> = {
-  index: ["gpt-5-mini", "gpt-4.1-mini", "openai/gpt-5-mini", "openai/gpt-4.1-mini"],
-  query: ["gpt-5", "gpt-4.1", "openai/gpt-5", "openai/gpt-4.1"],
-  wiki: ["gpt-5-mini", "gpt-4.1-mini", "openai/gpt-5-mini", "openai/gpt-4.1-mini"],
-  eval: ["gpt-5-mini", "gpt-4.1-mini", "openai/gpt-5-mini", "openai/gpt-4.1-mini"],
-  generic: ["gpt-5-mini", "gpt-4.1-mini", "openai/gpt-5-mini", "openai/gpt-4.1-mini"],
+  index: ["claude-haiku-4-5", "anthropic/claude-haiku-4.5", "claude-sonnet-4-6", "anthropic/claude-sonnet-4.6"],
+  query: ["claude-sonnet-4-6", "anthropic/claude-sonnet-4.6", "claude-sonnet-4-5", "anthropic/claude-sonnet-4.5"],
+  wiki: ["claude-haiku-4-5", "anthropic/claude-haiku-4.5", "claude-sonnet-4-6", "anthropic/claude-sonnet-4.6"],
+  eval: ["claude-haiku-4-5", "anthropic/claude-haiku-4.5", "claude-sonnet-4-6", "anthropic/claude-sonnet-4.6"],
+  generic: ["claude-haiku-4-5", "anthropic/claude-haiku-4.5", "claude-sonnet-4-6", "anthropic/claude-sonnet-4.6"],
 };
 
 /** Providers to try, in priority order for API-key-only uses */

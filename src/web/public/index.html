@@ -115,7 +115,15 @@
     #source-viewer-empty, #source-viewer-loading, #source-viewer-error { display: flex; align-items: center; justify-content: center; min-height: 180px; text-align: center; font-size: 13px; color: var(--ink-faint); }
     #source-viewer-error { color: var(--urgent); }
     #source-viewer-canvas-wrap { display: flex; justify-content: center; align-items: flex-start; }
+    #source-viewer-page-wrap { position: relative; display: inline-block; }
     #source-viewer-canvas { display: block; background: white; border-radius: 10px; box-shadow: 0 8px 24px rgba(26, 21, 32, 0.08); }
+    #source-viewer-overlay { position: absolute; inset: 0; width: 100%; height: 100%; pointer-events: none; overflow: visible; }
+    .source-highlight { fill: rgba(79, 45, 127, 0.16); stroke: rgba(79, 45, 127, 0.6); stroke-width: 2; rx: 4; animation: sourcePulse 1.8s ease-in-out infinite; }
+    @keyframes sourcePulse { 0%,100% { fill-opacity: 0.16; stroke-opacity: 0.55; } 50% { fill-opacity: 0.28; stroke-opacity: 0.9; } }
+    #source-viewer-empty[hidden],
+    #source-viewer-loading[hidden],
+    #source-viewer-error[hidden],
+    #source-viewer-canvas-wrap[hidden] { display: none !important; }
 
     @media (max-width: 1100px) {
       #source-viewer.open { width: 50vw; min-width: 320px; }
@@ -185,7 +193,10 @@
         <div id="source-viewer-loading" hidden>Loading PDF…</div>
         <div id="source-viewer-error" hidden></div>
         <div id="source-viewer-canvas-wrap" hidden>
-          <canvas id="source-viewer-canvas"></canvas>
+          <div id="source-viewer-page-wrap">
+            <canvas id="source-viewer-canvas"></canvas>
+            <svg id="source-viewer-overlay" aria-hidden="true"></svg>
+          </div>
         </div>
       </div>
     </aside>
@@ -202,6 +213,7 @@ let answerText = '';         // raw accumulated markdown
 let viewerPdf = null;        // active PDF document in Source Viewer
 let viewerFile = '';         // current PDF filename
 let viewerPage = 1;          // current page number in Source Viewer
+let viewerCitation = null;   // current citation shown in Source Viewer
 let activeCitationChip = null;
 let resizeTimer = null;
 
@@ -221,6 +233,8 @@ const sourceViewerLoading = document.getElementById('source-viewer-loading');
 const sourceViewerError = document.getElementById('source-viewer-error');
 const sourceViewerCanvasWrap = document.getElementById('source-viewer-canvas-wrap');
 const sourceViewerCanvas = document.getElementById('source-viewer-canvas');
+const sourceViewerOverlay = document.getElementById('source-viewer-overlay');
+const sourceViewerPageWrap = document.getElementById('source-viewer-page-wrap');
 const sourceViewerPrevBtn = document.getElementById('source-viewer-prev');
 const sourceViewerNextBtn = document.getElementById('source-viewer-next');
 const sourceViewerCloseBtn = document.getElementById('source-viewer-close');
@@ -468,6 +482,25 @@ function showSourceViewerState(state, message = '') {
   if (state === 'empty') sourceViewerEmpty.textContent = message || 'Click any citation chip to open the cited PDF page here.';
 }
 
+function currentCitationBoxes(pageNum) {
+  if (!viewerCitation) return [];
+  if (Array.isArray(viewerCitation.pages) && viewerCitation.pages.length > 0) {
+    return viewerCitation.pages.filter(p => p.page === pageNum);
+  }
+  if (viewerCitation.bbox && (viewerCitation.page || 1) === pageNum) {
+    return [viewerCitation.bbox];
+  }
+  return [];
+}
+
+function renderSourceHighlights(pageNum, pageWidth, pageHeight) {
+  const boxes = currentCitationBoxes(pageNum);
+  sourceViewerOverlay.setAttribute('viewBox', `0 0 ${pageWidth} ${pageHeight}`);
+  sourceViewerOverlay.innerHTML = boxes.map((box) =>
+    `<rect class="source-highlight" x="${box.x}" y="${box.y}" width="${box.width}" height="${box.height}" rx="4" ry="4"></rect>`
+  ).join('');
+}
+
 function updateSourceViewerNav() {
   const total = viewerPdf?.numPages || 0;
   sourceViewerPrevBtn.disabled = !viewerPdf || viewerPage <= 1;
@@ -475,8 +508,133 @@ function updateSourceViewerNav() {
   sourceViewerPageIndicator.textContent = total > 0 ? `Page ${viewerPage} of ${total}` : 'Page —';
 }
 
+/** Cache bbox page data: bboxPageCache["file.pdf:3"] = pageData */
+const bboxPageCache = {};
+
+/** Client-side quote matching against bbox JSON to get accurate highlight */
+async function verifyCitationBbox(citation) {
+  try {
+    const pageNum = citation.page || 1;
+    const cacheKey = `${citation.file}:${pageNum}`;
+    let bboxData = bboxPageCache[cacheKey];
+    if (!bboxData) {
+      const res = await fetch(`/api/bbox/${encodeURIComponent(citation.file)}?page=${pageNum}`);
+      if (!res.ok) return;
+      bboxData = await res.json();
+      if (!bboxData.error) bboxPageCache[cacheKey] = bboxData;
+    }
+    if (bboxData.error) return;
+
+    const page = bboxData.pages?.find(p => p.page === citation.page);
+    if (!page || !page.textItems?.length) return;
+
+    // Build text run from textItems (same logic as server-side)
+    const Y_TOL = 3, X_GAP = 15;
+    const items = page.textItems.filter(t => t.text.trim().length > 0);
+    if (!items.length) return;
+
+    const sorted = [...items].sort((a, b) => {
+      const dy = a.y - b.y;
+      return Math.abs(dy) > Y_TOL ? dy : a.x - b.x;
+    });
+
+    // Group into lines
+    const lines = [];
+    let curLine = [sorted[0]], curY = sorted[0].y;
+    for (let i = 1; i < sorted.length; i++) {
+      if (Math.abs(sorted[i].y - curY) <= Y_TOL) {
+        curLine.push(sorted[i]);
+      } else {
+        lines.push(curLine);
+        curLine = [sorted[i]];
+        curY = sorted[i].y;
+      }
+    }
+    lines.push(curLine);
+    for (const line of lines) line.sort((a, b) => a.x - b.x);
+
+    // Concatenate with segments
+    let text = '';
+    const segments = [];
+    for (let li = 0; li < lines.length; li++) {
+      const line = lines[li];
+      for (let ii = 0; ii < line.length; ii++) {
+        const item = line[ii];
+        if (ii > 0) {
+          const prev = line[ii - 1];
+          const gap = item.x - (prev.x + prev.width);
+          text += gap > X_GAP ? '  ' : gap >= 0 ? ' ' : '';
+        }
+        const start = text.length;
+        text += item.text;
+        segments.push({ start, end: text.length, bbox: { x: item.x, y: item.y, width: item.width, height: item.height } });
+      }
+      if (li < lines.length - 1) text += '\n';
+    }
+
+    // Try exact match, then normalized
+    const quote = citation.quote;
+    let matchStart = -1, matchEnd = -1;
+
+    // Exact
+    const idx = text.indexOf(quote);
+    if (idx >= 0) { matchStart = idx; matchEnd = idx + quote.length; }
+
+    // Normalized
+    if (matchStart < 0) {
+      const norm = s => s.toLowerCase().replace(/[^\w\s]/g, '').replace(/\s+/g, ' ').trim();
+      const nHay = norm(text), nNeedle = norm(quote);
+      const nIdx = nHay.indexOf(nNeedle);
+      if (nIdx >= 0) {
+        // Map back to original positions
+        let nPos = 0, oStart = -1, oEnd = -1;
+        for (let i = 0; i < text.length && oEnd < 0; i++) {
+          const ch = text[i];
+          if (/\s/.test(ch)) {
+            let j = i;
+            while (j < text.length && /\s/.test(text[j])) j++;
+            if (nPos === nIdx) oStart = i;
+            nPos++;
+            if (nPos >= nIdx + nNeedle.length && oEnd < 0) oEnd = j;
+            i = j - 1;
+            continue;
+          }
+          if (/[^\w]/.test(ch)) continue;
+          if (nPos === nIdx) oStart = i;
+          nPos++;
+          if (nPos >= nIdx + nNeedle.length && oEnd < 0) oEnd = i + 1;
+        }
+        if (oStart >= 0 && oEnd > oStart) { matchStart = oStart; matchEnd = oEnd; }
+      }
+    }
+
+    if (matchStart < 0) return;
+
+    // Merge bboxes of matching segments
+    const boxes = segments.filter(s => s.end > matchStart && s.start < matchEnd).map(s => s.bbox);
+    if (!boxes.length) return;
+
+    let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity;
+    for (const b of boxes) {
+      if (b.x < minX) minX = b.x;
+      if (b.y < minY) minY = b.y;
+      if (b.x + b.width > maxX) maxX = b.x + b.width;
+      if (b.y + b.height > maxY) maxY = b.y + b.height;
+    }
+    citation.bbox = {
+      x: Math.round(minX * 100) / 100,
+      y: Math.round(minY * 100) / 100,
+      width: Math.round((maxX - minX) * 100) / 100,
+      height: Math.round((maxY - minY) * 100) / 100,
+    };
+  } catch (err) {
+    console.warn('[viewer] Citation bbox verification failed:', err);
+  }
+}
+
 async function openSourceViewer(citation, chip) {
   setActiveCitationChip(chip);
+  viewerCitation = citation;
   sourceViewerEl.classList.add('open');
   sourceViewerEl.setAttribute('aria-hidden', 'false');
   sourceViewerTitle.textContent = citation.file || 'Source Viewer';
@@ -488,13 +646,18 @@ async function openSourceViewer(citation, chip) {
       throw new Error('pdf.js did not load. Refresh and try again.');
     }
 
+    // Verify bbox in parallel with PDF loading
+    const verifyPromise = verifyCitationBbox(citation);
+
     if (!viewerPdf || viewerFile !== citation.file) {
       const url = `/api/pdf/${encodeURIComponent(citation.file)}`;
       viewerPdf = await window.pdfjsLib.getDocument({ url }).promise;
       viewerFile = citation.file;
     }
 
+    await verifyPromise;
     viewerPage = Math.max(1, Math.min(citationStartPage(citation), viewerPdf.numPages || 1));
+    await new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve)));
     await renderSourceViewerPage(viewerPage);
   } catch (err) {
     console.error('Source Viewer failed:', err);
@@ -518,11 +681,14 @@ async function renderSourceViewerPage(pageNum) {
   const viewport = page.getViewport({ scale: cssScale });
   const outputScale = window.devicePixelRatio || 1;
   const ctx = sourceViewerCanvas.getContext('2d');
+  if (!ctx) throw new Error('Could not get canvas context for PDF rendering.');
 
   sourceViewerCanvas.width = Math.floor(viewport.width * outputScale);
   sourceViewerCanvas.height = Math.floor(viewport.height * outputScale);
   sourceViewerCanvas.style.width = `${viewport.width}px`;
   sourceViewerCanvas.style.height = `${viewport.height}px`;
+  sourceViewerPageWrap.style.width = `${viewport.width}px`;
+  sourceViewerPageWrap.style.height = `${viewport.height}px`;
 
   ctx.setTransform(1, 0, 0, 1, 0, 0);
   ctx.clearRect(0, 0, sourceViewerCanvas.width, sourceViewerCanvas.height);
@@ -534,7 +700,11 @@ async function renderSourceViewerPage(pageNum) {
   }).promise;
 
   viewerPage = pageNum;
-  sourceViewerMeta.textContent = viewerFile;
+  renderSourceHighlights(pageNum, baseViewport.width, baseViewport.height);
+  const highlightCount = currentCitationBoxes(pageNum).length;
+  sourceViewerMeta.textContent = highlightCount > 0
+    ? `${viewerFile} · ${highlightCount} highlight${highlightCount !== 1 ? 's' : ''}`
+    : `${viewerFile} · no highlight on this page`;
   showSourceViewerState('canvas');
   updateSourceViewerNav();
 }
@@ -542,6 +712,8 @@ async function renderSourceViewerPage(pageNum) {
 function closeSourceViewer() {
   sourceViewerEl.classList.remove('open');
   sourceViewerEl.setAttribute('aria-hidden', 'true');
+  viewerCitation = null;
+  sourceViewerOverlay.innerHTML = '';
   setActiveCitationChip(null);
 }
 

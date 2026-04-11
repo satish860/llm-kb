@@ -178,24 +178,68 @@ export async function startWebUI(options: WebUIOptions): Promise<void> {
 
   app.get("/api/bbox/:filename", async (c) => {
     const filename = decodeURIComponent(c.req.param("filename"));
-    // Map PDF name to JSON
-    const jsonName = filename.replace(/\.pdf$/i, ".json");
-    const jsonPath = join(sourcesDir, jsonName);
+    const pageParam = c.req.query("page");
+    // Map PDF name to .pages dir or .json
+    const baseName = filename.replace(/\.pdf$/i, "");
+    const pagesDir = join(sourcesDir, `${baseName}.pages`);
 
-    if (existsSync(jsonPath)) {
-      const data = await readFile(jsonPath, "utf-8");
-      return c.json(JSON.parse(data));
+    // If page requested and per-page file exists, read just that (~50KB)
+    if (pageParam) {
+      const pageNum = parseInt(pageParam, 10);
+
+      // Try exact per-page file first
+      const pageFile = join(pagesDir, `${pageNum}.json`);
+      console.log(`[bbox] Looking for: ${pageFile}, exists: ${existsSync(pageFile)}`);
+      if (existsSync(pageFile)) {
+        const data = JSON.parse(await readFile(pageFile, "utf-8"));
+        return c.json({ source: data.source, totalPages: data.totalPages, pages: [data] });
+      }
+
+      // Fuzzy find the .pages dir (handles number prefixes)
+      try {
+        const allDirs = await readdir(sourcesDir);
+        const needle = baseName.replace(/^\d+\.\s*/, "").toLowerCase();
+        const match = allDirs.find((d) => d.endsWith(".pages") && d.toLowerCase().includes(needle));
+        if (match) {
+          const fuzzyPageFile = join(sourcesDir, match, `${pageNum}.json`);
+          if (existsSync(fuzzyPageFile)) {
+            const data = JSON.parse(await readFile(fuzzyPageFile, "utf-8"));
+            return c.json({ source: data.source, totalPages: data.totalPages, pages: [data] });
+          }
+        }
+      } catch {}
     }
-    // Fuzzy find
+
+    // Fallback: read full JSON (for old KBs without per-page files, or no page param)
+    const jsonPath = join(sourcesDir, `${baseName}.json`);
+    if (existsSync(jsonPath)) {
+      const data = JSON.parse(await readFile(jsonPath, "utf-8"));
+      if (pageParam) {
+        const pageNum = parseInt(pageParam, 10);
+        const page = data.pages?.find((p: any) => p.page === pageNum);
+        if (!page) return c.json({ error: "Page not found" }, 404);
+        return c.json({ source: data.source, totalPages: data.totalPages, pages: [page] });
+      }
+      return c.json(data);
+    }
+
+    // Fuzzy find .json
     try {
       const files = await readdir(sourcesDir);
-      const needle = filename.replace(/\.pdf$/i, "").replace(/^\d+\.\s*/, "").toLowerCase();
+      const needle = baseName.replace(/^\d+\.\s*/, "").toLowerCase();
       const match = files.find((f) => f.endsWith(".json") && f.toLowerCase().includes(needle));
       if (match) {
-        const data = await readFile(join(sourcesDir, match), "utf-8");
-        return c.json(JSON.parse(data));
+        const data = JSON.parse(await readFile(join(sourcesDir, match), "utf-8"));
+        if (pageParam) {
+          const pageNum = parseInt(pageParam, 10);
+          const page = data.pages?.find((p: any) => p.page === pageNum);
+          if (!page) return c.json({ error: "Page not found" }, 404);
+          return c.json({ source: data.source, totalPages: data.totalPages, pages: [page] });
+        }
+        return c.json(data);
       }
     } catch {}
+
     return c.json({ error: "Bbox data not found" }, 404);
   });
 

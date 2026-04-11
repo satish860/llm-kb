@@ -14,7 +14,7 @@ import { readdir, mkdir, readFile } from "node:fs/promises";
 import { existsSync, readdirSync, readFileSync } from "node:fs";
 import { createKBSession, continueKBSession } from "./session-store.js";
 import { saveTrace, appendToQueryLog, type KBTrace } from "./trace-builder.js";
-import { parseCitations } from "./citations.js";
+import { parseCitations, matchCitation } from "./citations.js";
 import { updateWiki } from "./wiki-updater.js";
 import { join, basename } from "node:path";
 import chalk from "chalk";
@@ -235,6 +235,25 @@ function subscribeDisplay(
   let lastQuestion = "";
 
   const scheduler = new WikiUpdateScheduler(5, 3);
+  const sourcesDir = join(opts.folder, ".llm-kb", "wiki", "sources");
+
+  /** Verify citation bboxes by matching quotes against source JSON files */
+  const verifyCitations = async (citations: any[]): Promise<any[]> => {
+    if (citations.length === 0) return citations;
+    try {
+      const verified = await Promise.all(
+        citations.map((c) => matchCitation(c, sourcesDir))
+      );
+      return verified.map((m) => {
+        if (m.mergedRect) {
+          return { file: m.file, page: m.page, quote: m.quote, bbox: m.mergedRect, pages: m.pages };
+        }
+        return { file: m.file, page: m.page, quote: m.quote, bbox: m.bbox, pages: m.pages };
+      });
+    } catch {
+      return citations;
+    }
+  };
 
   const buildTrace = (messages: any[]): KBTrace | null => {
     const last = [...messages].reverse().find((m) => m.role === "assistant" && m.stopReason === "stop");
@@ -258,6 +277,10 @@ function subscribeDisplay(
   const doUpdate = async (messages: any[]) => {
     const trace = buildTrace(messages);
     if (!trace) return;
+    // Verify citation bboxes before saving
+    if (trace.citations && trace.citations.length > 0) {
+      trace.citations = await verifyCitations(trace.citations);
+    }
     await saveTrace(opts.folder, trace);
     await appendToQueryLog(opts.folder, trace);
     await updateWiki(opts.folder, trace, opts.authStorage);
@@ -366,44 +389,50 @@ function subscribeDisplay(
     if (event.type === "agent_end") {
       // Parse citations from the full answer
       const trace = buildTrace(event.messages as any[]);
-      const citations = trace?.citations ?? [];
+      const rawCitations = trace?.citations ?? [];
 
-      if (ui) { ui.showCompletion(citations); ui.enableInput(); }
-      else {
-        // Stdout mode: show citation footer
-        if (citations.length > 0) {
-          process.stdout.write(`\n${dim("\u2500\u2500 Citations " + "\u2500".repeat(Math.max(0, (process.stdout.columns || 80) - 14)))}\n`);
-          for (let i = 0; i < citations.length; i++) {
-            const c = citations[i];
-            const pageStr = c.pages && c.pages.length > 0
-              ? `p.${c.pages.map((p: any) => p.page).join("-")}`
-              : `p.${c.page}`;
-            const hasBbox = c.bbox || (c.pages && c.pages.length > 0);
-            let bboxDetail: string;
-            if (c.pages && c.pages.length > 0) {
-              bboxDetail = `\u2705 bbox (${c.pages.length} pages)`;
-            } else if (c.bbox) {
-              bboxDetail = `\u2705 bbox (${c.bbox.x},${c.bbox.y} \u2192 ${Math.round(c.bbox.x + c.bbox.width)},${Math.round(c.bbox.y + c.bbox.height)})`;
-            } else {
-              bboxDetail = `\u26a0\ufe0f  no bbox`;
+      // Verify bboxes against source JSON, then display
+      verifyCitations(rawCitations).then((citations) => {
+        // Update trace with verified citations
+        if (trace && citations.length > 0) trace.citations = citations;
+
+        if (ui) { ui.showCompletion(citations); ui.enableInput(); }
+        else {
+          // Stdout mode: show citation footer
+          if (citations.length > 0) {
+            process.stdout.write(`\n${dim("\u2500\u2500 Citations " + "\u2500".repeat(Math.max(0, (process.stdout.columns || 80) - 14)))}\n`);
+            for (let i = 0; i < citations.length; i++) {
+              const c = citations[i];
+              const pageStr = c.pages && c.pages.length > 0
+                ? `p.${c.pages.map((p: any) => p.page).join("-")}`
+                : `p.${c.page}`;
+              const hasBbox = c.bbox || (c.pages && c.pages.length > 0);
+              let bboxDetail: string;
+              if (c.pages && c.pages.length > 0) {
+                bboxDetail = `\u2705 bbox (${c.pages.length} pages)`;
+              } else if (c.bbox) {
+                bboxDetail = `\u2705 bbox (${c.bbox.x},${c.bbox.y} \u2192 ${Math.round(c.bbox.x + c.bbox.width)},${Math.round(c.bbox.y + c.bbox.height)})`;
+              } else {
+                bboxDetail = `\u26a0\ufe0f  no bbox`;
+              }
+              const quote = c.quote.length > 60 ? c.quote.slice(0, 57) + "..." : c.quote;
+              process.stdout.write(`\n  ${chalk.bold(`[${i + 1}]`)} \ud83d\udcc4 ${c.file}, ${pageStr}\n`);
+              process.stdout.write(dim(`      "${quote}"`) + "\n");
+              process.stdout.write(`      ${bboxDetail}\n`);
             }
-            const quote = c.quote.length > 60 ? c.quote.slice(0, 57) + "..." : c.quote;
-            process.stdout.write(`\n  ${chalk.bold(`[${i + 1}]`)} \ud83d\udcc4 ${c.file}, ${pageStr}\n`);
-            process.stdout.write(dim(`      "${quote}"`) + "\n");
-            process.stdout.write(`      ${bboxDetail}\n`);
           }
-        }
 
-        const elapsed = ((Date.now() - startTime) / 1000).toFixed(1);
-        const source = filesReadCount > 0
-          ? `${filesReadCount} file${filesReadCount !== 1 ? "s" : ""} read` : "wiki";
-        const citCount = citations.length > 0
-          ? ` \u00b7 ${citations.length} citation${citations.length !== 1 ? "s" : ""}` : "";
-        const stats = `${elapsed}s \u00b7 ${source}${citCount}`;
-        const cols = process.stdout.columns || 80;
-        const pad = Math.max(0, cols - stats.length - 4);
-        process.stdout.write(`\n${dim("\u2500\u2500 " + stats + " " + "\u2500".repeat(pad))}\n`);
-      }
+          const elapsed = ((Date.now() - startTime) / 1000).toFixed(1);
+          const source = filesReadCount > 0
+            ? `${filesReadCount} file${filesReadCount !== 1 ? "s" : ""} read` : "wiki";
+          const citCount = citations.length > 0
+            ? ` \u00b7 ${citations.length} citation${citations.length !== 1 ? "s" : ""}` : "";
+          const stats = `${elapsed}s \u00b7 ${source}${citCount}`;
+          const cols = process.stdout.columns || 80;
+          const pad = Math.max(0, cols - stats.length - 4);
+          process.stdout.write(`\n${dim("\u2500\u2500 " + stats + " " + "\u2500".repeat(pad))}\n`);
+        }
+      });
       scheduler.onAgentEnd(event.messages as any[], doUpdate);
     }
 

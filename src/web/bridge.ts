@@ -132,17 +132,18 @@ export async function createWebChatSession(
       if (parsed.citations.length === 0 && textToSearch.length > 0) {
         console.log(`[bridge] No citations found. Last 300 chars: ...${textToSearch.slice(-300)}`);
       }
-      if (parsed.citations.length > 0) {
-        send({ type: "citations", data: parsed.citations });
-      }
-
-      send({
+      const sendDone = () => send({
         type: "done",
         elapsed: Math.round(elapsed * 10) / 10,
         filesRead: filesReadCount,
         citationCount: parsed.citations.length,
         answer: parsed.answer,
       });
+
+      if (parsed.citations.length > 0) {
+        send({ type: "citations", data: parsed.citations });
+      }
+      sendDone();
     }
   });
 

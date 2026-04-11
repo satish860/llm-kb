@@ -472,7 +472,8 @@ async function resolveJsonPath(file: string, sourcesDir: string): Promise<string
 
 export async function matchCitation(
   citation: CitationRecord,
-  sourcesDir: string
+  sourcesDir: string,
+  options?: { skipFuzzy?: boolean }
 ): Promise<MatchedCitation> {
   const base: MatchedCitation = {
     ...citation,
@@ -556,7 +557,8 @@ export async function matchCitation(
       continue;
     }
 
-    // 3. Fuzzy match
+    // 3. Fuzzy match (skip if requested — expensive O(n^3) Levenshtein)
+    if (options?.skipFuzzy) continue;
     const fuzzy = findFuzzy(run.text, citation.quote);
     if (fuzzy) {
       const [start, end, confidence] = fuzzy;
