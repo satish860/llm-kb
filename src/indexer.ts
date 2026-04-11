@@ -8,7 +8,7 @@ import {
   SettingsManager,
   AuthStorage,
 } from "@mariozechner/pi-coding-agent";
-import { resolveModel } from "./model-resolver.js";
+import { resolveModelCandidates } from "./model-resolver.js";
 import { readdir, readFile } from "node:fs/promises";
 import { createKBSession } from "./session-store.js";
 import { getNodeModulesPath } from "./utils.js";
@@ -95,40 +95,13 @@ export async function buildIndex(
   });
   await loader.reload();
 
-  const model = modelId
-    ? await resolveModel(modelId, authStorage)
-    : undefined;
+  const candidates = modelId
+    ? await resolveModelCandidates(modelId, authStorage, "index")
+    : [];
 
-  const { session } = await createAgentSession({
-    cwd: folder,
-    resourceLoader: loader,
-    tools: [
-      createReadTool(folder),
-      createBashTool(folder),
-      createWriteTool(folder),
-    ],
-    sessionManager: await createKBSession(folder),
-    settingsManager: SettingsManager.inMemory({
-      compaction: { enabled: false },
-    }),
-    ...(authStorage ? { authStorage } : {}),
-    ...(model ? { model } : {}),
-  });
-
-  // Subscribe to streaming output
-  if (onOutput) {
-    session.subscribe((event) => {
-      if (
-        event.type === "message_update" &&
-        event.assistantMessageEvent.type === "text_delta"
-      ) {
-        onOutput(event.assistantMessageEvent.delta);
-      }
-    });
+  if (modelId && candidates.length === 0) {
+    throw new Error(`No usable model found for '${modelId}'. Configure Anthropic, OpenRouter, or OpenAI credentials.`);
   }
-
-  // Tag the session so the session-watcher can identify it as an index run
-  session.setSessionName(`index: ${new Date().toISOString()}`);
 
   // Build the prompt
   const prompt = `Read each file in .llm-kb/wiki/sources/ (one at a time, just the first 500 characters of each).
@@ -137,16 +110,60 @@ Then write .llm-kb/wiki/index.md with a summary table of all sources.
 Include: Source filename, Type (PDF/Excel/Word/etc), Pages (from the JSON if available), a one-line summary, and key topics.
 Add a total word count estimate at the bottom.`;
 
-  await session.prompt(prompt);
-
-  // Read the generated index
   const indexPath = join(sourcesDir, "..", "index.md");
-  try {
-    const content = await readFile(indexPath, "utf-8");
-    session.dispose();
-    return content;
-  } catch {
-    session.dispose();
-    throw new Error("Agent did not create index.md");
+  const attemptCandidates = candidates.length > 0
+    ? candidates
+    : [{ provider: "default", candidateId: "default", model: undefined as any }];
+  let lastError: unknown;
+
+  for (let i = 0; i < attemptCandidates.length; i++) {
+    const candidate = attemptCandidates[i]!;
+    const { session } = await createAgentSession({
+      cwd: folder,
+      resourceLoader: loader,
+      tools: [
+        createReadTool(folder),
+        createBashTool(folder),
+        createWriteTool(folder),
+      ],
+      sessionManager: await createKBSession(folder),
+      settingsManager: SettingsManager.inMemory({
+        compaction: { enabled: false },
+      }),
+      ...(authStorage ? { authStorage } : {}),
+      ...(candidate.model ? { model: candidate.model } : {}),
+    });
+
+    if (onOutput) {
+      session.subscribe((event) => {
+        if (
+          event.type === "message_update" &&
+          event.assistantMessageEvent.type === "text_delta"
+        ) {
+          onOutput(event.assistantMessageEvent.delta);
+        }
+      });
+    }
+
+    session.setSessionName(`index: ${new Date().toISOString()}`);
+
+    try {
+      await session.prompt(prompt);
+      const content = await readFile(indexPath, "utf-8");
+      session.dispose();
+      return content;
+    } catch (error) {
+      lastError = error;
+      session.dispose();
+      const next = attemptCandidates[i + 1];
+      if (next) {
+        const detail = error instanceof Error ? error.message : String(error);
+        console.warn(`  Index attempt failed on ${candidate.provider}:${candidate.model?.id ?? candidate.candidateId} (${detail}). Retrying with ${next.provider}:${next.model?.id ?? next.candidateId}...`);
+        continue;
+      }
+    }
   }
+
+  if (lastError instanceof Error) throw lastError;
+  throw new Error("Agent did not create index.md");
 }

@@ -8,7 +8,8 @@ import {
   AuthStorage,
 } from "@mariozechner/pi-coding-agent";
 import type { AgentSession } from "@mariozechner/pi-coding-agent";
-import { resolveModel } from "./model-resolver.js";
+import { resolveModelCandidates } from "./model-resolver.js";
+import { createRetryingSession } from "./retrying-session.js";
 import { readdir, mkdir, readFile } from "node:fs/promises";
 import { existsSync, readdirSync, readFileSync } from "node:fs";
 import { createKBSession, continueKBSession } from "./session-store.js";
@@ -43,6 +44,17 @@ function extractFilesRead(messages: any[]): string[] {
     }
   }
   return paths;
+}
+
+function validateQueryResult(session: AgentSession, beforeMessageCount: number): string | undefined {
+  const messages = Array.isArray((session as any).state?.messages)
+    ? (session as any).state.messages.slice(beforeMessageCount)
+    : [];
+  const assistant = [...messages].reverse().find((m: any) => m.role === "assistant");
+  if (!assistant) return "no assistant response produced";
+  const text = extractAnswerText(assistant.content ?? []);
+  if (!text.trim()) return "assistant response was empty";
+  return undefined;
 }
 
 function getToolLabel(toolName: string, args: any): string | null {
@@ -452,18 +464,40 @@ export async function createChat(
     createWriteTool(folder),
   ];
 
-  const model = options.modelId ? await resolveModel(options.modelId, options.authStorage) : undefined;
+  const candidates = options.modelId
+    ? await resolveModelCandidates(options.modelId, options.authStorage, "query")
+    : [];
+  if (options.modelId && candidates.length === 0) {
+    throw new Error(`No usable model found for '${options.modelId}'. Configure Anthropic, OpenRouter, or OpenAI credentials.`);
+  }
 
-  const { session } = await createAgentSession({
-    cwd: folder,
-    resourceLoader: loader,
-    tools,
-    sessionManager: options.save ? await createKBSession(folder) : await continueKBSession(folder),
-    settingsManager: SettingsManager.inMemory({ compaction: { enabled: false } }),
-    thinkingLevel: "low",
-    ...(options.authStorage ? { authStorage: options.authStorage } : {}),
-    ...(model ? { model } : {}),
-  });
+  const session = options.modelId
+    ? await createRetryingSession({
+        candidates,
+        validatePromptResult: validateQueryResult,
+        createSession: async (candidate) => {
+          const { session } = await createAgentSession({
+            cwd: folder,
+            resourceLoader: loader,
+            tools,
+            sessionManager: options.save ? await createKBSession(folder) : await continueKBSession(folder),
+            settingsManager: SettingsManager.inMemory({ compaction: { enabled: false } }),
+            thinkingLevel: "low",
+            ...(options.authStorage ? { authStorage: options.authStorage } : {}),
+            model: candidate.model,
+          });
+          return session;
+        },
+      })
+    : (await createAgentSession({
+        cwd: folder,
+        resourceLoader: loader,
+        tools,
+        sessionManager: options.save ? await createKBSession(folder) : await continueKBSession(folder),
+        settingsManager: SettingsManager.inMemory({ compaction: { enabled: false } }),
+        thinkingLevel: "low",
+        ...(options.authStorage ? { authStorage: options.authStorage } : {}),
+      })).session;
 
   const display = subscribeDisplay(session, {
     modelId: options.modelId, authStorage: options.authStorage,

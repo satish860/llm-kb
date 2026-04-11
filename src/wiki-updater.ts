@@ -1,16 +1,9 @@
-import { completeSimple } from "@mariozechner/pi-ai";
 import { AuthStorage } from "@mariozechner/pi-coding-agent";
 import { existsSync } from "node:fs";
 import { readFile, writeFile, mkdir } from "node:fs/promises";
 import { join } from "node:path";
 import type { KBTrace, TraceCitation } from "./trace-builder.js";
-import { resolveModel, resolveApiKey as resolveApiKeyFromProvider } from "./model-resolver.js";
-
-async function resolveApiKey(authStorage?: AuthStorage): Promise<string | undefined> {
-  const result = await resolveApiKeyFromProvider(authStorage);
-  if (result) return result.key;
-  return process.env.ANTHROPIC_API_KEY;
-}
+import { completeWithFallback } from "./complete-with-fallback.js";
 
 function formatCitationsForWiki(citations: TraceCitation[]): string {
   if (citations.length === 0) return "";
@@ -119,19 +112,14 @@ export async function updateWiki(
   const answer = trace.answerWithoutCitations ?? trace.answer;
   const prompt = buildPrompt(trace.question, answer, sources, date, currentWiki, trace.citations);
 
-  const apiKey = await resolveApiKey(authStorage);
-  if (!apiKey) return;
-
-  const model = await resolveModel(indexModelId, authStorage);
-  if (!model) return;
-
-  const result = await completeSimple(
-    model,
+  const result = await completeWithFallback(
+    indexModelId,
+    authStorage,
+    "wiki",
     {
       systemPrompt: "You are a precise knowledge librarian. Organize information by CONCEPT, not by source file. Synthesize knowledge from multiple sources into unified topic articles. ALWAYS preserve page-level citations (Source: filename, p.X) for every fact. Return only clean markdown.",
       messages: [{ role: "user", content: prompt, timestamp: Date.now() }],
-    },
-    { apiKey }
+    }
   );
 
   const text = result.content

@@ -7,6 +7,7 @@
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link href="https://fonts.googleapis.com/css2?family=Fraunces:opsz,wght@9..144,400;9..144,600;9..144,700&family=Instrument+Sans:wght@400;500;600&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
   <script src="https://cdn.jsdelivr.net/npm/marked/marked.min.js"></script>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.min.js"></script>
   <style>
     *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
     html, body { height: 100%; overflow: hidden; }
@@ -93,6 +94,38 @@
     .citation-file { color: var(--teal); }
     .citation-quote { color: var(--ink-faint); font-size: 12px; margin-top: 2px; }
     .citation-status { font-size: 11px; margin-top: 2px; }
+    .citation-chip.active { background: white; box-shadow: inset 0 0 0 1px var(--paper-dim); }
+
+    /* ── Source Viewer ─── */
+    #source-viewer { width: 0; min-width: 0; opacity: 0; pointer-events: none; overflow: hidden; display: flex; flex-direction: column; background: white; border-left: 1px solid var(--paper-dim); transition: width 0.2s ease, opacity 0.2s ease; }
+    #source-viewer.open { width: min(44vw, 560px); min-width: 380px; opacity: 1; pointer-events: auto; }
+    #source-viewer-header { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 14px 16px; border-bottom: 1px solid var(--paper-dim); }
+    #source-viewer-title-wrap { min-width: 0; }
+    #source-viewer-title { font-size: 14px; font-weight: 600; color: var(--ink); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+    #source-viewer-meta { font-size: 12px; color: var(--ink-faint); margin-top: 2px; }
+    #source-viewer-close { width: 30px; height: 30px; border-radius: 50%; border: none; background: var(--paper-warm); color: var(--ink-soft); cursor: pointer; font-size: 18px; line-height: 1; }
+    #source-viewer-close:hover { background: var(--paper-dim); }
+    #source-viewer-toolbar { display: flex; align-items: center; justify-content: space-between; gap: 8px; padding: 10px 16px; border-bottom: 1px solid var(--paper-dim); background: #fcfbf8; }
+    .viewer-nav { display: flex; gap: 8px; }
+    .viewer-btn { border: 1px solid var(--paper-dim); background: white; color: var(--ink-soft); border-radius: 8px; padding: 6px 10px; font-size: 12px; cursor: pointer; }
+    .viewer-btn:hover:not(:disabled) { background: var(--paper-warm); }
+    .viewer-btn:disabled { opacity: 0.45; cursor: default; }
+    #source-viewer-page-indicator { font-size: 12px; color: var(--ink-faint); }
+    #source-viewer-body { flex: 1; overflow: auto; padding: 16px; background: #fbfaf8; }
+    #source-viewer-empty, #source-viewer-loading, #source-viewer-error { display: flex; align-items: center; justify-content: center; min-height: 180px; text-align: center; font-size: 13px; color: var(--ink-faint); }
+    #source-viewer-error { color: var(--urgent); }
+    #source-viewer-canvas-wrap { display: flex; justify-content: center; align-items: flex-start; }
+    #source-viewer-canvas { display: block; background: white; border-radius: 10px; box-shadow: 0 8px 24px rgba(26, 21, 32, 0.08); }
+
+    @media (max-width: 1100px) {
+      #source-viewer.open { width: 50vw; min-width: 320px; }
+    }
+
+    @media (max-width: 900px) {
+      #app { position: relative; }
+      #source-viewer { position: absolute; top: 0; right: 0; height: 100%; z-index: 20; box-shadow: -16px 0 40px rgba(26, 21, 32, 0.12); }
+      #source-viewer.open { width: 100%; min-width: 0; }
+    }
   </style>
 </head>
 <body>
@@ -132,6 +165,30 @@
       </div>
       <div id="status-bar"><span class="dot"></span><span id="status-text">Connecting...</span></div>
     </div>
+    <aside id="source-viewer" aria-hidden="true">
+      <div id="source-viewer-header">
+        <div id="source-viewer-title-wrap">
+          <div id="source-viewer-title">Source Viewer</div>
+          <div id="source-viewer-meta">Click a citation to inspect the original page.</div>
+        </div>
+        <button id="source-viewer-close" aria-label="Close source viewer">×</button>
+      </div>
+      <div id="source-viewer-toolbar">
+        <div class="viewer-nav">
+          <button class="viewer-btn" id="source-viewer-prev">← Prev</button>
+          <button class="viewer-btn" id="source-viewer-next">Next →</button>
+        </div>
+        <div id="source-viewer-page-indicator">Page —</div>
+      </div>
+      <div id="source-viewer-body">
+        <div id="source-viewer-empty">Click any citation chip to open the cited PDF page here.</div>
+        <div id="source-viewer-loading" hidden>Loading PDF…</div>
+        <div id="source-viewer-error" hidden></div>
+        <div id="source-viewer-canvas-wrap" hidden>
+          <canvas id="source-viewer-canvas"></canvas>
+        </div>
+      </div>
+    </aside>
   </div>
 
 <script>
@@ -142,6 +199,11 @@ let streaming = false;
 let currentAssistant = null; // DOM container for current assistant response
 let answerEl = null;         // current answer bubble element
 let answerText = '';         // raw accumulated markdown
+let viewerPdf = null;        // active PDF document in Source Viewer
+let viewerFile = '';         // current PDF filename
+let viewerPage = 1;          // current page number in Source Viewer
+let activeCitationChip = null;
+let resizeTimer = null;
 
 const messagesEl = document.getElementById('chat-messages');
 const chatContainer = document.getElementById('chat-container');
@@ -149,6 +211,23 @@ const input = document.getElementById('chat-input');
 const sendBtn = document.getElementById('send-btn');
 const statusText = document.getElementById('status-text');
 const welcomeEl = document.getElementById('welcome');
+const sourceViewerEl = document.getElementById('source-viewer');
+const sourceViewerTitle = document.getElementById('source-viewer-title');
+const sourceViewerMeta = document.getElementById('source-viewer-meta');
+const sourceViewerPageIndicator = document.getElementById('source-viewer-page-indicator');
+const sourceViewerBody = document.getElementById('source-viewer-body');
+const sourceViewerEmpty = document.getElementById('source-viewer-empty');
+const sourceViewerLoading = document.getElementById('source-viewer-loading');
+const sourceViewerError = document.getElementById('source-viewer-error');
+const sourceViewerCanvasWrap = document.getElementById('source-viewer-canvas-wrap');
+const sourceViewerCanvas = document.getElementById('source-viewer-canvas');
+const sourceViewerPrevBtn = document.getElementById('source-viewer-prev');
+const sourceViewerNextBtn = document.getElementById('source-viewer-next');
+const sourceViewerCloseBtn = document.getElementById('source-viewer-close');
+
+if (window.pdfjsLib) {
+  window.pdfjsLib.GlobalWorkerOptions.workerSrc = 'https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.worker.min.js';
+}
 
 // ── WebSocket ────────────────────────────────────────────────
 function connectWS() {
@@ -357,13 +436,113 @@ function renderCitations(citations) {
       <span class="citation-status">${statusIcon} ${hasBbox ? 'bbox verified' : 'no bbox'}</span>
     `;
     chip.onclick = () => {
-      // TODO W7/W8: open Source Viewer sheet with highlighted page
-      console.log('Citation clicked:', c);
+      openSourceViewer(c, chip);
     };
     block.appendChild(chip);
   }
   currentAssistant.appendChild(block);
   scrollToBottom();
+}
+
+function citationStartPage(citation) {
+  if (Array.isArray(citation.pages) && citation.pages.length > 0) {
+    return citation.pages[0].page || citation.page || 1;
+  }
+  return citation.page || 1;
+}
+
+function setActiveCitationChip(chip) {
+  if (activeCitationChip) activeCitationChip.classList.remove('active');
+  activeCitationChip = chip || null;
+  if (activeCitationChip) activeCitationChip.classList.add('active');
+}
+
+function showSourceViewerState(state, message = '') {
+  sourceViewerEmpty.hidden = state !== 'empty';
+  sourceViewerLoading.hidden = state !== 'loading';
+  sourceViewerError.hidden = state !== 'error';
+  sourceViewerCanvasWrap.hidden = state !== 'canvas';
+
+  if (state === 'loading') sourceViewerLoading.textContent = message || 'Loading PDF…';
+  if (state === 'error') sourceViewerError.textContent = message || 'Failed to load source page.';
+  if (state === 'empty') sourceViewerEmpty.textContent = message || 'Click any citation chip to open the cited PDF page here.';
+}
+
+function updateSourceViewerNav() {
+  const total = viewerPdf?.numPages || 0;
+  sourceViewerPrevBtn.disabled = !viewerPdf || viewerPage <= 1;
+  sourceViewerNextBtn.disabled = !viewerPdf || viewerPage >= total;
+  sourceViewerPageIndicator.textContent = total > 0 ? `Page ${viewerPage} of ${total}` : 'Page —';
+}
+
+async function openSourceViewer(citation, chip) {
+  setActiveCitationChip(chip);
+  sourceViewerEl.classList.add('open');
+  sourceViewerEl.setAttribute('aria-hidden', 'false');
+  sourceViewerTitle.textContent = citation.file || 'Source Viewer';
+  sourceViewerMeta.textContent = `Loading page ${citationStartPage(citation)}…`;
+  showSourceViewerState('loading', 'Loading PDF…');
+
+  try {
+    if (!window.pdfjsLib) {
+      throw new Error('pdf.js did not load. Refresh and try again.');
+    }
+
+    if (!viewerPdf || viewerFile !== citation.file) {
+      const url = `/api/pdf/${encodeURIComponent(citation.file)}`;
+      viewerPdf = await window.pdfjsLib.getDocument({ url }).promise;
+      viewerFile = citation.file;
+    }
+
+    viewerPage = Math.max(1, Math.min(citationStartPage(citation), viewerPdf.numPages || 1));
+    await renderSourceViewerPage(viewerPage);
+  } catch (err) {
+    console.error('Source Viewer failed:', err);
+    showSourceViewerState('error', err?.message || 'Failed to load PDF.');
+    sourceViewerMeta.textContent = 'Source unavailable';
+    sourceViewerPageIndicator.textContent = 'Page —';
+    viewerPdf = null;
+    viewerFile = '';
+    updateSourceViewerNav();
+  }
+}
+
+async function renderSourceViewerPage(pageNum) {
+  if (!viewerPdf) return;
+
+  showSourceViewerState('loading', 'Rendering page…');
+  const page = await viewerPdf.getPage(pageNum);
+  const baseViewport = page.getViewport({ scale: 1 });
+  const availableWidth = Math.max(240, sourceViewerBody.clientWidth - 32);
+  const cssScale = availableWidth / baseViewport.width;
+  const viewport = page.getViewport({ scale: cssScale });
+  const outputScale = window.devicePixelRatio || 1;
+  const ctx = sourceViewerCanvas.getContext('2d');
+
+  sourceViewerCanvas.width = Math.floor(viewport.width * outputScale);
+  sourceViewerCanvas.height = Math.floor(viewport.height * outputScale);
+  sourceViewerCanvas.style.width = `${viewport.width}px`;
+  sourceViewerCanvas.style.height = `${viewport.height}px`;
+
+  ctx.setTransform(1, 0, 0, 1, 0, 0);
+  ctx.clearRect(0, 0, sourceViewerCanvas.width, sourceViewerCanvas.height);
+
+  await page.render({
+    canvasContext: ctx,
+    viewport,
+    transform: outputScale !== 1 ? [outputScale, 0, 0, outputScale, 0, 0] : null,
+  }).promise;
+
+  viewerPage = pageNum;
+  sourceViewerMeta.textContent = viewerFile;
+  showSourceViewerState('canvas');
+  updateSourceViewerNav();
+}
+
+function closeSourceViewer() {
+  sourceViewerEl.classList.remove('open');
+  sourceViewerEl.setAttribute('aria-hidden', 'true');
+  setActiveCitationChip(null);
 }
 
 function finishResponse(data) {
@@ -426,6 +605,26 @@ async function loadStatus() {
 document.getElementById('new-chat-btn').addEventListener('click', () => {
   // Reload page to start fresh session
   location.reload();
+});
+
+sourceViewerCloseBtn.addEventListener('click', closeSourceViewer);
+sourceViewerPrevBtn.addEventListener('click', () => {
+  if (viewerPdf && viewerPage > 1) renderSourceViewerPage(viewerPage - 1);
+});
+sourceViewerNextBtn.addEventListener('click', () => {
+  if (viewerPdf && viewerPage < viewerPdf.numPages) renderSourceViewerPage(viewerPage + 1);
+});
+window.addEventListener('keydown', (e) => {
+  if (e.key === 'Escape' && sourceViewerEl.classList.contains('open')) {
+    closeSourceViewer();
+  }
+});
+window.addEventListener('resize', () => {
+  if (!viewerPdf || !sourceViewerEl.classList.contains('open')) return;
+  clearTimeout(resizeTimer);
+  resizeTimer = setTimeout(() => {
+    renderSourceViewerPage(viewerPage).catch((err) => console.error('Resize rerender failed:', err));
+  }, 120);
 });
 
 // ── Helpers ──────────────────────────────────────────────────

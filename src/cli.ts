@@ -260,7 +260,7 @@ program
     if (articleCount > 0) console.log(`  ${chalk.dim("Articles:")} ${articleCount} compiled`);
     if (outputCount > 0) console.log(`  ${chalk.dim("Outputs:")} ${outputCount} saved answer${outputCount !== 1 ? "s" : ""}`);
     console.log(`  ${chalk.dim("Models:")}  ${chalk.cyan(config.queryModel)} ${chalk.dim("(query)")}  ${chalk.cyan(config.indexModel)} ${chalk.dim("(index)")}`);
-    console.log(`  ${chalk.dim("Auth:")}    ${auth.ok ? (auth.method === "pi-sdk" ? "Pi SDK" : "ANTHROPIC_API_KEY") : chalk.red("not configured")}`);
+    console.log(`  ${chalk.dim("Auth:")}    ${auth.ok ? (auth.method === "pi-sdk" ? "Pi SDK" : `env (${auth.providers.join(", ")})`) : chalk.red("not configured")}`);
     console.log();
   });
 
