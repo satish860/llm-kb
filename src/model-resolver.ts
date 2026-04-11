@@ -27,7 +27,7 @@ const PURPOSE_FALLBACKS: Record<ModelPurpose, string[]> = {
 };
 
 /** Providers to try, in priority order for API-key-only uses */
-const PROVIDERS = ["anthropic", "openrouter", "openai"] as const;
+const PROVIDERS = ["openrouter", "anthropic", "openai"] as const;
 
 type Provider = (typeof PROVIDERS)[number];
 
@@ -54,12 +54,12 @@ function modelCandidates(modelId: string, purpose: ModelPurpose): string[] {
 
 function providerOrder(modelId: string): Provider[] {
   if (modelId.startsWith("openai/") || modelId.startsWith("gpt-")) {
-    return ["openai", "openrouter", "anthropic"];
+    return ["openrouter", "openai", "anthropic"];
   }
   if (modelId.startsWith("anthropic/") || modelId.startsWith("claude-")) {
-    return ["anthropic", "openai", "openrouter"];
+    return ["openrouter", "anthropic", "openai"];
   }
-  return ["openai", "openrouter", "anthropic"];
+  return ["openrouter", "openai", "anthropic"];
 }
 
 function resolveIdForProvider(provider: Provider, candidateId: string): string[] {

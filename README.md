@@ -15,20 +15,25 @@ That's it. PDFs get parsed, an index is built, and an interactive chat opens —
 
 ## Authentication
 
-Two options (you need one):
+Three options (you need one):
 
-**Option 1 — Pi SDK (recommended)**
+**Option 1 — OpenRouter API key (recommended)**
+```bash
+export OPENROUTER_API_KEY=sk-or-...
+```
+
+**Option 2 — Pi SDK**
 ```bash
 npm install -g @mariozechner/pi-coding-agent
 pi   # run once to authenticate
 ```
 
-**Option 2 — Anthropic API key**
+**Option 3 — Anthropic API key**
 ```bash
 export ANTHROPIC_API_KEY=sk-ant-...
 ```
 
-If neither is configured, `llm-kb` shows a clear error with setup instructions.
+If none is configured, `llm-kb` shows a clear error with setup instructions.
 
 ## What It Does
 
@@ -156,7 +161,7 @@ Knowledge Base Status
   Articles: 15 compiled
   Outputs: 2 saved answers
   Models:  claude-sonnet-4-6 (query)  claude-haiku-4-5 (index)
-  Auth:    Pi SDK
+  Auth:    OpenRouter
 ```
 
 ## The Three-Layer Architecture
