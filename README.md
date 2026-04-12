@@ -9,21 +9,27 @@ Inspired by [Karpathy's LLM Knowledge Bases](https://x.com/karpathy/status/20398
 **Demo:** browser UI with streamed answers, clickable citations, and source-highlighted PDFs.
 [Download the short MP4 demo](./assets/llm-kb-demo-short.mp4)
 
+Every query leaves traces. `llm-kb eval` turns those traces into better behavior.
+
+**Example:** “Compare Apple and Microsoft revenue in 2022 with citation” → answer with clickable citations that open highlighted source pages.
+
+![llm-kb split view screenshot](./assets/llm-kb-split-view.png)
+
 ## Quick Start
 
 ```bash
 npm install -g llm-kb
-llm-kb run ./my-documents
-llm-kb ui ./my-documents
+llm-kb run ./my-documents   # builds .llm-kb and opens terminal chat
+llm-kb ui ./my-documents    # opens browser UI using the built knowledge base
 ```
 
-- `llm-kb run` scans, parses, indexes, and opens the interactive terminal workflow.
-- `llm-kb ui` opens the browser experience with citation chips, session history, wiki view, and source inspection.
+- First run `llm-kb run` once to scan files, parse sources, build `.llm-kb/`, and open the terminal workflow.
+- Then open `llm-kb ui` anytime you want the browser experience with citation chips, session history, wiki view, and source inspection.
 
 Typical flow:
 1. Drop PDFs/docs into a folder
 2. Run `llm-kb run ./my-documents` once to build `.llm-kb/`
-3. Open `llm-kb ui ./my-documents`
+3. Open `llm-kb ui ./my-documents` anytime after that
 4. Ask a question
 5. Click a citation to jump to the source page and see the highlighted evidence
 
