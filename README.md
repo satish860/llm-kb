@@ -376,63 +376,6 @@ Phases can interleave: think → read files → answer → think again → read 
 
 The `llm-kb query` command uses stdout mode — same phases, works with pipes and scripts.
 
-## Docker Deployment
-
-Run llm-kb as a fully self-contained Docker container — includes Node.js, Ollama, and the web UI. No local installation needed.
-
-### Quick Start (Docker)
-
-```bash
-# Build the image
-docker build -t llm-kb .
-
-# Run with your documents folder
-docker run -p 3947:3947 -v /path/to/your/documents:/data/documents llm-kb
-```
-
-Open `http://localhost:3947` in your browser.
-
-### Docker Compose (Recommended)
-
-```bash
-# Set your documents path
-DOCUMENTS_PATH=/path/to/docs docker compose up
-
-# Or create a .env file
-echo "DOCUMENTS_PATH=/path/to/docs" > .env
-echo "OLLAMA_MODEL=llama3" >> .env
-docker compose up -d
-```
-
-### Configuration
-
-| Variable | Default | Description |
-|---|---|---|
-| `DOCUMENTS_PATH` | `./docs` | Host path to your documents folder |
-| `OLLAMA_MODEL` | `llama3` | Ollama model to use (pulled on first run) |
-| `LLM_KB_PORT` | `3947` | Web UI port |
-
-### Custom Model
-
-```bash
-docker run -p 3947:3947 \
-  -v /path/to/docs:/data/documents \
-  -v ollama-models:/root/.ollama \
-  -e OLLAMA_MODEL=mistral \
-  llm-kb
-```
-
-The Ollama models volume is persisted — models are downloaded only once.
-
-### What's in the Container
-
-```
-Node.js 22 (slim) + Ollama
-├── llm-kb (built CLI + web UI)
-├── Ollama server (started automatically)
-├── /data/documents (your files, mounted)
-└── Health check on /api/status
-```
 
 ## Development
 
