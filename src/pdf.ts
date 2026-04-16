@@ -108,21 +108,6 @@ export async function parsePDF(
   await writeFile(mdPath, markdown);
   await writeFile(jsonPath, JSON.stringify(bboxData, null, 2));
 
-  // Write per-page bbox files for fast single-page lookups
-  const pagesDir = join(outputDir, `${name}.pages`);
-  await mkdir(pagesDir, { recursive: true });
-  for (const pageData of bboxData.pages) {
-    const pageFile = join(pagesDir, `${pageData.page}.json`);
-    await writeFile(pageFile, JSON.stringify({
-      source: bboxData.source,
-      totalPages: bboxData.totalPages,
-      page: pageData.page,
-      width: pageData.width,
-      height: pageData.height,
-      textItems: pageData.textItems,
-    }));
-  }
-
   return {
     name,
     mdPath,

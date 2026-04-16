@@ -71,46 +71,18 @@ program
     let failed = 0;
     const errors: { name: string; message: string }[] = [];
 
-    // Parse PDFs in parallel (up to 8 concurrent)
-    const CONCURRENCY = Math.min(8, pdfs.length);
-    let nextIdx = 0;
-    let completed = 0;
-    const parseStart = Date.now();
-
-    let activeCount = 0;
-
-    function renderProgress(currentFile: string) {
-      const cols = process.stdout.columns || 80;
-      const pct = Math.round((completed / pdfs.length) * 100);
-      const barWidth = Math.min(30, cols - 40);
-      const filled = Math.round((completed / pdfs.length) * barWidth);
-      const active = Math.min(activeCount, barWidth - filled);
-      const bar = chalk.green("\u2588".repeat(filled)) + chalk.yellow("\u2593".repeat(active)) + chalk.dim("\u2591".repeat(barWidth - filled - active));
-      const elapsed = ((Date.now() - parseStart) / 1000).toFixed(0);
-      const line = `  ${bar} ${chalk.bold(`${completed}/${pdfs.length}`)} ${chalk.cyan(`(${pct}%)`)} ${chalk.dim(`${elapsed}s`)} ${chalk.yellow(`${activeCount} active`)}`;
-      process.stdout.write(`\r${line.padEnd(cols)}`);
-    }
-
-    async function worker() {
-      while (nextIdx < pdfs.length) {
-        const i = nextIdx++;
-        const pdf = pdfs[i];
-        activeCount++;
-        renderProgress(pdf.name);
-        try {
-          const result = await parsePDF(join(root, pdf.path), sourcesDir);
-          if (result.skipped) skipped++; else parsed++;
-        } catch (err: any) {
-          failed++;
-          errors.push({ name: pdf.name, message: err.message });
-        }
-        activeCount--;
-        completed++;
-        renderProgress(pdf.name);
+    for (let i = 0; i < pdfs.length; i++) {
+      const pdf = pdfs[i];
+      const progress = `  Parsing... ${i + 1}/${pdfs.length} \u2014 ${pdf.name}`;
+      process.stdout.write(`\r${progress.padEnd(process.stdout.columns || 80)}`);
+      try {
+        const result = await parsePDF(join(root, pdf.path), sourcesDir);
+        if (result.skipped) skipped++; else parsed++;
+      } catch (err: any) {
+        failed++;
+        errors.push({ name: pdf.name, message: err.message });
       }
     }
-
-    await Promise.all(Array.from({ length: CONCURRENCY }, () => worker()));
 
     process.stdout.write(`\r${"".padEnd(process.stdout.columns || 80)}\r`);
 
@@ -288,7 +260,7 @@ program
     if (articleCount > 0) console.log(`  ${chalk.dim("Articles:")} ${articleCount} compiled`);
     if (outputCount > 0) console.log(`  ${chalk.dim("Outputs:")} ${outputCount} saved answer${outputCount !== 1 ? "s" : ""}`);
     console.log(`  ${chalk.dim("Models:")}  ${chalk.cyan(config.queryModel)} ${chalk.dim("(query)")}  ${chalk.cyan(config.indexModel)} ${chalk.dim("(index)")}`);
-    console.log(`  ${chalk.dim("Auth:")}    ${auth.ok ? (auth.method === "pi-sdk" ? "Pi SDK" : `env (${auth.providers.join(", ")})`) : chalk.red("not configured")}`);
+    console.log(`  ${chalk.dim("Auth:")}    ${auth.ok ? (auth.method === "pi-sdk" ? "Pi SDK" : "ANTHROPIC_API_KEY") : chalk.red("not configured")}`);
     console.log();
   });
 

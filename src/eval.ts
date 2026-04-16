@@ -1,4 +1,5 @@
-import { completeWithFallback } from "./complete-with-fallback.js";
+import { completeSimple } from "@mariozechner/pi-ai";
+import { resolveModel, resolveApiKey as resolveApiKeyFromProvider } from "./model-resolver.js";
 import { AuthStorage } from "@mariozechner/pi-coding-agent";
 import { readFile, readdir, writeFile, mkdir } from "node:fs/promises";
 import { readFileSync } from "node:fs";
@@ -281,12 +282,20 @@ function calculateMetrics(qas: SessionQA[]): EvalMetrics {
 
 // ── LLM judge ───────────────────────────────────────────────────────────────
 
+async function resolveApiKey(authStorage?: AuthStorage): Promise<string | undefined> {
+  const result = await resolveApiKeyFromProvider(authStorage);
+  if (result) return result.key;
+  return process.env.ANTHROPIC_API_KEY;
+}
+
 async function judgeQA(
   qa: SessionQA,
-  modelId: string,
-  authStorage?: AuthStorage
+  apiKey: string,
+  modelId: string
 ): Promise<EvalIssue[]> {
   const issues: EvalIssue[] = [];
+  const model = await resolveModel(modelId);
+  if (!model) return issues;
 
   // Build context for the judge
   const filesSummary = qa.filesRead
@@ -325,14 +334,13 @@ Return ONLY a JSON array. If no issues found, return [].
 Example: [{"type":"wiki-gap","severity":"warning","detail":"Electronic evidence topic not in wiki","recommendation":"Add electronic evidence section to wiki"}]`;
 
   try {
-    const result = await completeWithFallback(
-      modelId,
-      authStorage,
-      "eval",
+    const result = await completeSimple(
+      model,
       {
         systemPrompt: "You are a precise QA evaluator. Return only valid JSON arrays. No explanation.",
         messages: [{ role: "user", content: prompt, timestamp: Date.now() }],
-      }
+      },
+      { apiKey }
     );
 
     const text = result.content
@@ -561,17 +569,18 @@ export async function runEval(
   const metrics = calculateMetrics(qas);
 
   // 3. Run LLM judge on each Q&A
+  const apiKey = await resolveApiKey(options.authStorage);
   const allIssues: EvalIssue[] = [];
-  const modelId = "claude-haiku-4-5";
 
-  try {
+  if (apiKey) {
+    const modelId = "claude-haiku-4-5";
     for (let i = 0; i < qas.length; i++) {
       log(`Judging ${i + 1}/${qas.length}: "${qas[i].question.slice(0, 50)}..."`);
-      const issues = await judgeQA(qas[i], modelId, options.authStorage);
+      const issues = await judgeQA(qas[i], apiKey, modelId);
       allIssues.push(...issues);
     }
-  } catch (err) {
-    log(`LLM judge unavailable — skipping (${err instanceof Error ? err.message : String(err)})`);
+  } else {
+    log("No API key — skipping LLM judge checks");
   }
 
   // 4. Extract wiki gaps

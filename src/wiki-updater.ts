@@ -1,9 +1,9 @@
-import { AuthStorage } from "@mariozechner/pi-coding-agent";
 import { existsSync } from "node:fs";
 import { readFile, writeFile, mkdir } from "node:fs/promises";
 import { join } from "node:path";
 import type { KBTrace, TraceCitation } from "./trace-builder.js";
-import { completeWithFallback } from "./complete-with-fallback.js";
+
+
 
 function formatCitationsForWiki(citations: TraceCitation[]): string {
   if (citations.length === 0) return "";
@@ -38,6 +38,7 @@ function buildPrompt(
 - Every factual claim must have a page-level citation — this is critical for verification
 - Add cross-references where concepts relate: See also: [[Other Concept]]
 - End each ## section with: *Sources: file1, file2 · date*
+- Also append related user queries at the end of the section as: *User query: "the exact user question"*
 - Separate ## sections with: ---`;
 
   if (currentWiki.trim()) {
@@ -89,8 +90,8 @@ Return ONLY the wiki markdown. No explanation.`;
 export async function updateWiki(
   kbRoot: string,
   trace: KBTrace,
-  authStorage?: AuthStorage,
-  indexModelId = "claude-haiku-4-5"
+  authStorage?: any,
+  indexModelId = "llama3"
 ): Promise<void> {
   if (trace.mode !== "query" || !trace.question || !trace.answer) return;
 
@@ -112,23 +113,49 @@ export async function updateWiki(
   const answer = trace.answerWithoutCitations ?? trace.answer;
   const prompt = buildPrompt(trace.question, answer, sources, date, currentWiki, trace.citations);
 
-  const result = await completeWithFallback(
-    indexModelId,
-    authStorage,
-    "wiki",
-    {
-      systemPrompt: "You are a precise knowledge librarian. Organize information by CONCEPT, not by source file. Synthesize knowledge from multiple sources into unified topic articles. ALWAYS preserve page-level citations (Source: filename, p.X) for every fact. Return only clean markdown.",
-      messages: [{ role: "user", content: prompt, timestamp: Date.now() }],
+  try {
+    const res = await fetch("http://127.0.0.1:11434/api/chat", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        model: indexModelId || "llama3",
+        messages: [
+          { role: "system", content: "You are a precise knowledge librarian. Organize information by CONCEPT, not by source file. Synthesize knowledge from multiple sources into unified topic articles. ALWAYS preserve page-level citations (Source: filename, p.X) for every fact. Return only clean markdown." },
+          { role: "user", content: prompt }
+        ],
+        stream: true
+      })
+    });
+
+    if (!res.ok) {
+      throw new Error(`Ollama returned ${res.status}: ${await res.text()}`);
     }
-  );
 
-  const text = result.content
-    .filter((b) => b.type === "text")
-    .map((b) => (b as any).text)
-    .join("")
-    .trim();
+    const reader = res.body?.getReader();
+    if (!reader) throw new Error("No response body from Ollama");
 
-  if (text) {
-    await writeFile(wikiPath, text + "\n", "utf-8");
+    const decoder = new TextDecoder();
+    let text = "";
+
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      
+      const chunk = decoder.decode(value, { stream: true });
+      const lines = chunk.split("\n").filter(Boolean);
+      for (const line of lines) {
+        try {
+          const parsed = JSON.parse(line);
+          if (parsed.message?.content) text += parsed.message.content;
+        } catch { /* skip */ }
+      }
+    }
+
+    text = text.trim();
+    if (text) {
+      await writeFile(wikiPath, text + "\n", "utf-8");
+    }
+  } catch (err: any) {
+    console.error("[wiki-updater] Failed to update wiki:", err.message);
   }
 }

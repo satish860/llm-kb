@@ -2,14 +2,14 @@ import { Hono } from "hono";
 import { serve } from "@hono/node-server";
 import { createNodeWebSocket } from "@hono/node-ws";
 import { serveStatic } from "@hono/node-server/serve-static";
-import { readFile, readdir, stat } from "node:fs/promises";
+import { readFile, readdir, stat, writeFile } from "node:fs/promises";
 import { existsSync } from "node:fs";
 import { join, basename } from "node:path";
 import { fileURLToPath } from "node:url";
 import { dirname } from "node:path";
 import { exec } from "node:child_process";
 import type { AuthStorage } from "@mariozechner/pi-coding-agent";
-import { createWebChatSession } from "./bridge.js";
+import { createOllamaDirectSession } from "./ollama-direct.js";
 
 // ── Types ───────────────────────────────────────────────────────────────────
 
@@ -75,7 +75,12 @@ export async function startWebUI(options: WebUIOptions): Promise<void> {
       } catch {}
     }
 
-    return c.json({ sourceCount, wikiExists, wikiConcepts, folder });
+    // Include model/provider info for UI badge
+    const modelId = options.modelId || "llama3.2";
+    const isOllama = !process.env.ANTHROPIC_API_KEY;
+    const provider = isOllama ? "ollama" : "anthropic";
+
+    return c.json({ sourceCount, wikiExists, wikiConcepts, folder, modelId, provider });
   });
 
   // ── API: Sources ──────────────────────────────────────────────────────
@@ -178,67 +183,24 @@ export async function startWebUI(options: WebUIOptions): Promise<void> {
 
   app.get("/api/bbox/:filename", async (c) => {
     const filename = decodeURIComponent(c.req.param("filename"));
-    const pageParam = c.req.query("page");
-    // Map PDF name to .pages dir or .json
-    const baseName = filename.replace(/\.pdf$/i, "");
-    const pagesDir = join(sourcesDir, `${baseName}.pages`);
+    // Map PDF name to JSON
+    const jsonName = filename.replace(/\.pdf$/i, ".json");
+    const jsonPath = join(sourcesDir, jsonName);
 
-    // If page requested and per-page file exists, read just that (~50KB)
-    if (pageParam) {
-      const pageNum = parseInt(pageParam, 10);
-
-      // Try exact per-page file first
-      const pageFile = join(pagesDir, `${pageNum}.json`);
-      if (existsSync(pageFile)) {
-        const data = JSON.parse(await readFile(pageFile, "utf-8"));
-        return c.json({ source: data.source, totalPages: data.totalPages, pages: [data] });
-      }
-
-      // Fuzzy find the .pages dir (handles number prefixes)
-      try {
-        const allDirs = await readdir(sourcesDir);
-        const needle = baseName.replace(/^\d+\.\s*/, "").toLowerCase();
-        const match = allDirs.find((d) => d.endsWith(".pages") && d.toLowerCase().includes(needle));
-        if (match) {
-          const fuzzyPageFile = join(sourcesDir, match, `${pageNum}.json`);
-          if (existsSync(fuzzyPageFile)) {
-            const data = JSON.parse(await readFile(fuzzyPageFile, "utf-8"));
-            return c.json({ source: data.source, totalPages: data.totalPages, pages: [data] });
-          }
-        }
-      } catch {}
-    }
-
-    // Fallback: read full JSON (for old KBs without per-page files, or no page param)
-    const jsonPath = join(sourcesDir, `${baseName}.json`);
     if (existsSync(jsonPath)) {
-      const data = JSON.parse(await readFile(jsonPath, "utf-8"));
-      if (pageParam) {
-        const pageNum = parseInt(pageParam, 10);
-        const page = data.pages?.find((p: any) => p.page === pageNum);
-        if (!page) return c.json({ error: "Page not found" }, 404);
-        return c.json({ source: data.source, totalPages: data.totalPages, pages: [page] });
-      }
-      return c.json(data);
+      const data = await readFile(jsonPath, "utf-8");
+      return c.json(JSON.parse(data));
     }
-
-    // Fuzzy find .json
+    // Fuzzy find
     try {
       const files = await readdir(sourcesDir);
-      const needle = baseName.replace(/^\d+\.\s*/, "").toLowerCase();
+      const needle = filename.replace(/\.pdf$/i, "").replace(/^\d+\.\s*/, "").toLowerCase();
       const match = files.find((f) => f.endsWith(".json") && f.toLowerCase().includes(needle));
       if (match) {
-        const data = JSON.parse(await readFile(join(sourcesDir, match), "utf-8"));
-        if (pageParam) {
-          const pageNum = parseInt(pageParam, 10);
-          const page = data.pages?.find((p: any) => p.page === pageNum);
-          if (!page) return c.json({ error: "Page not found" }, 404);
-          return c.json({ source: data.source, totalPages: data.totalPages, pages: [page] });
-        }
-        return c.json(data);
+        const data = await readFile(join(sourcesDir, match), "utf-8");
+        return c.json(JSON.parse(data));
       }
     } catch {}
-
     return c.json({ error: "Bbox data not found" }, 404);
   });
 
@@ -255,10 +217,27 @@ export async function startWebUI(options: WebUIOptions): Promise<void> {
     }
   });
 
+  app.put("/api/wiki", async (c) => {
+    const wikiPath = join(kbDir, "wiki", "wiki.md");
+    try {
+      const body = await c.req.json();
+      if (typeof body.content !== "string") {
+        return c.json({ error: "Missing content field" }, 400);
+      }
+      const { mkdir: mkdirFs } = await import("node:fs/promises");
+      await mkdirFs(join(kbDir, "wiki"), { recursive: true });
+      await writeFile(wikiPath, body.content, "utf-8");
+      return c.json({ ok: true });
+    } catch (err: any) {
+      console.error("[api] Failed to save wiki:", err.message);
+      return c.json({ error: "Failed to save wiki" }, 500);
+    }
+  });
+
   // ── WebSocket: Chat ───────────────────────────────────────────────────
 
   app.get("/ws/chat", upgradeWebSocket((c) => {
-    let chatSession: Awaited<ReturnType<typeof createWebChatSession>> | null = null;
+    let chatSession: Awaited<ReturnType<typeof createOllamaDirectSession>> | null = null;
     let creating = false;
     let wsRef: any = null;
 
@@ -268,19 +247,18 @@ export async function startWebUI(options: WebUIOptions): Promise<void> {
         console.log("[ws] Client connected");
         ws.send(JSON.stringify({ type: "connected", message: "llm-kb web UI ready" }));
 
-        // Create agent session in background
+        // Create direct Ollama session in background
         creating = true;
-        createWebChatSession(folder, {
+        createOllamaDirectSession(folder, {
           send(data: string) {
             try { wsRef?.send(data); } catch (e) { console.error("[ws] send error:", e); }
           },
         }, {
-          authStorage: options.authStorage,
           modelId: options.modelId,
         }).then((session) => {
           chatSession = session;
           creating = false;
-          console.log("[ws] Agent session ready");
+          console.log("[ws] Ollama direct session ready");
           try { wsRef?.send(JSON.stringify({ type: "ready" })); } catch {}
         }).catch((err: any) => {
           creating = false;

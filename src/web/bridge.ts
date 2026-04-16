@@ -18,17 +18,7 @@ function getToolLabel(toolName: string, args: any): string | null {
     return `${verb}  ${file}`;
   }
   if (toolName === "bash" && args?.command) {
-    const cmd = (args.command as string).toLowerCase();
-    if (cmd.includes("textitems") || cmd.includes("bbox") || cmd.includes(".json")) {
-      return "Looking up citations";
-    }
-    if (cmd.includes("readfilesync") || cmd.includes("readfile") || cmd.includes("cat ")) {
-      return "Searching files";
-    }
-    if (cmd.includes("grep") || cmd.includes("find") || cmd.includes("search")) {
-      return "Searching files";
-    }
-    return "Analyzing sources";
+    return `Running  bash`;
   }
   return null;
 }
@@ -142,18 +132,17 @@ export async function createWebChatSession(
       if (parsed.citations.length === 0 && textToSearch.length > 0) {
         console.log(`[bridge] No citations found. Last 300 chars: ...${textToSearch.slice(-300)}`);
       }
-      const sendDone = () => send({
+      if (parsed.citations.length > 0) {
+        send({ type: "citations", data: parsed.citations });
+      }
+
+      send({
         type: "done",
         elapsed: Math.round(elapsed * 10) / 10,
         filesRead: filesReadCount,
         citationCount: parsed.citations.length,
         answer: parsed.answer,
       });
-
-      if (parsed.citations.length > 0) {
-        send({ type: "citations", data: parsed.citations });
-      }
-      sendDone();
     }
   });
 

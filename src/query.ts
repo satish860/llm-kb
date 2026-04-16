@@ -8,13 +8,12 @@ import {
   AuthStorage,
 } from "@mariozechner/pi-coding-agent";
 import type { AgentSession } from "@mariozechner/pi-coding-agent";
-import { resolveModelCandidates } from "./model-resolver.js";
-import { createRetryingSession } from "./retrying-session.js";
+import { resolveModel } from "./model-resolver.js";
 import { readdir, mkdir, readFile } from "node:fs/promises";
 import { existsSync, readdirSync, readFileSync } from "node:fs";
 import { createKBSession, continueKBSession } from "./session-store.js";
 import { saveTrace, appendToQueryLog, type KBTrace } from "./trace-builder.js";
-import { parseCitations, matchCitation } from "./citations.js";
+import { parseCitations } from "./citations.js";
 import { updateWiki } from "./wiki-updater.js";
 import { join, basename } from "node:path";
 import chalk from "chalk";
@@ -46,17 +45,6 @@ function extractFilesRead(messages: any[]): string[] {
   return paths;
 }
 
-function validateQueryResult(session: AgentSession, beforeMessageCount: number): string | undefined {
-  const messages = Array.isArray((session as any).state?.messages)
-    ? (session as any).state.messages.slice(beforeMessageCount)
-    : [];
-  const assistant = [...messages].reverse().find((m: any) => m.role === "assistant");
-  if (!assistant) return "no assistant response produced";
-  const text = extractAnswerText(assistant.content ?? []);
-  if (!text.trim()) return "assistant response was empty";
-  return undefined;
-}
-
 function getToolLabel(toolName: string, args: any): string | null {
   if (toolName === "read" || toolName === "write" || toolName === "edit") {
     const file = basename((args?.path as string) ?? "");
@@ -83,34 +71,38 @@ function buildQueryAgents(sourceFiles: string[], save: boolean, wikiContent: str
     `# llm-kb Knowledge Base — Query Mode`,
     ``,
     `## MANDATORY: Citation Format`,
-    `Every answer MUST end with a CITATIONS block. No exceptions. Not optional. Even for simple or wiki-sourced answers.`,
-    `If you do not include a CITATIONS block, the answer is considered INVALID.`,
+    `Every answer MUST end with a CITATIONS block. No exceptions. Even for simple or wiki-sourced answers.`,
+    `EVERY citation MUST have a bbox. Do NOT submit any citation without bbox.`,
     ``,
-    `You MUST place [1], [2], etc. inline in your answer text next to every claim or fact.`,
-    `Example: "Revenue grew 12% [1] driven by gaming segment expansion [2]."`,
-    `Every factual statement needs an inline citation number. Then ALWAYS end with:`,
+    `Use [1], [2], etc. inline in your answer, then include:`,
     ``,
     `CITATIONS:`,
-    `[1] file: "document.pdf", page: 3, quote: "exact text from source"`,
-    `[2] file: "other.pdf", page: 7, quote: "another exact excerpt"`,
+    `[1] file: "document.pdf", page: 3, quote: "exact text from source", bbox: {x: 142, y: 340, width: 234, height: 14}`,
     ``,
-    `Rules:`,
-    `- Use the ORIGINAL PDF filename (e.g. "report.pdf", not the .md version)`,
-    `- Quote must be an exact excerpt from the source text`,
-    `- Include the correct page number`,
-    `- Bounding boxes are optional but improve the experience. If you include them, use this format:`,
-    `  [1] file: "document.pdf", page: 3, quote: "exact text", bbox: {x: 142, y: 340, width: 234, height: 14}`,
-    `- To get bboxes, use a single bash script AFTER writing the full answer:`,
+    `To get the bbox for EACH citation:`,
+    `1. Read the .json file in .llm-kb/wiki/sources/ (same name as the .md file but .json)`,
+    `2. Use bash + node to search the textItems on the cited page`,
+    `3. Compute the merged bbox from matching textItems`,
+    ``,
+    `You can look up ALL citations in a single bash script. Example:`,
     "```",
     `node -e "`,
     `  const fs = require('fs');`,
-    `  const d = JSON.parse(fs.readFileSync('.llm-kb/wiki/sources/FILE.json','utf8'));`,
-    `  const p = d.pages.find(p=>p.page===PAGE);`,
-    `  const items = p.textItems.filter(t=>t.text.includes('KEYWORD'));`,
-    `  console.log('source:', d.source, 'bbox:', JSON.stringify(items.map(t=>({x:t.x,y:t.y,w:t.width,h:t.height}))));`,
+    `  // Citation 1: file X, page Y`,
+    `  const d1 = JSON.parse(fs.readFileSync('.llm-kb/wiki/sources/FILE1.json','utf8'));`,
+    `  const p1 = d1.pages.find(p=>p.page===PAGE1);`,
+    `  const items1 = p1.textItems.filter(t=>t.text.includes('KEYWORD1'));`,
+    `  console.log('C1 source:', d1.source, 'bbox:', JSON.stringify(items1.map(t=>({x:t.x,y:t.y,w:t.width,h:t.height}))));`,
+    `  // Citation 2: file X, page Z`,
+    `  const d2 = JSON.parse(fs.readFileSync('.llm-kb/wiki/sources/FILE2.json','utf8'));`,
+    `  const p2 = d2.pages.find(p=>p.page===PAGE2);`,
+    `  const items2 = p2.textItems.filter(t=>t.text.includes('KEYWORD2'));`,
+    `  console.log('C2 source:', d2.source, 'bbox:', JSON.stringify(items2.map(t=>({x:t.x,y:t.y,w:t.width,h:t.height}))));`,
     `"`,
     "```",
-    `- If answering from wiki, cite the original source files mentioned in the wiki entries`,
+    ``,
+    `The .json file has a "source" field — use that as the filename (it's the original .pdf name).`,
+    `If answering from wiki, the wiki has (Source: filename, p.X) — use that page number for the .json lookup.`,
     ``,
     wikiSection,
     `## ${sourceStep}`,
@@ -231,25 +223,6 @@ function subscribeDisplay(
   let lastQuestion = "";
 
   const scheduler = new WikiUpdateScheduler(5, 3);
-  const sourcesDir = join(opts.folder, ".llm-kb", "wiki", "sources");
-
-  /** Verify citation bboxes by matching quotes against source JSON files */
-  const verifyCitations = async (citations: any[]): Promise<any[]> => {
-    if (citations.length === 0) return citations;
-    try {
-      const verified = await Promise.all(
-        citations.map((c) => matchCitation(c, sourcesDir))
-      );
-      return verified.map((m) => {
-        if (m.mergedRect) {
-          return { file: m.file, page: m.page, quote: m.quote, bbox: m.mergedRect, pages: m.pages };
-        }
-        return { file: m.file, page: m.page, quote: m.quote, bbox: m.bbox, pages: m.pages };
-      });
-    } catch {
-      return citations;
-    }
-  };
 
   const buildTrace = (messages: any[]): KBTrace | null => {
     const last = [...messages].reverse().find((m) => m.role === "assistant" && m.stopReason === "stop");
@@ -273,10 +246,6 @@ function subscribeDisplay(
   const doUpdate = async (messages: any[]) => {
     const trace = buildTrace(messages);
     if (!trace) return;
-    // Verify citation bboxes before saving
-    if (trace.citations && trace.citations.length > 0) {
-      trace.citations = await verifyCitations(trace.citations);
-    }
     await saveTrace(opts.folder, trace);
     await appendToQueryLog(opts.folder, trace);
     await updateWiki(opts.folder, trace, opts.authStorage);
@@ -385,50 +354,44 @@ function subscribeDisplay(
     if (event.type === "agent_end") {
       // Parse citations from the full answer
       const trace = buildTrace(event.messages as any[]);
-      const rawCitations = trace?.citations ?? [];
+      const citations = trace?.citations ?? [];
 
-      // Verify bboxes against source JSON, then display
-      verifyCitations(rawCitations).then((citations) => {
-        // Update trace with verified citations
-        if (trace && citations.length > 0) trace.citations = citations;
-
-        if (ui) { ui.showCompletion(citations); ui.enableInput(); }
-        else {
-          // Stdout mode: show citation footer
-          if (citations.length > 0) {
-            process.stdout.write(`\n${dim("\u2500\u2500 Citations " + "\u2500".repeat(Math.max(0, (process.stdout.columns || 80) - 14)))}\n`);
-            for (let i = 0; i < citations.length; i++) {
-              const c = citations[i];
-              const pageStr = c.pages && c.pages.length > 0
-                ? `p.${c.pages.map((p: any) => p.page).join("-")}`
-                : `p.${c.page}`;
-              const hasBbox = c.bbox || (c.pages && c.pages.length > 0);
-              let bboxDetail: string;
-              if (c.pages && c.pages.length > 0) {
-                bboxDetail = `\u2705 bbox (${c.pages.length} pages)`;
-              } else if (c.bbox) {
-                bboxDetail = `\u2705 bbox (${c.bbox.x},${c.bbox.y} \u2192 ${Math.round(c.bbox.x + c.bbox.width)},${Math.round(c.bbox.y + c.bbox.height)})`;
-              } else {
-                bboxDetail = `\u26a0\ufe0f  no bbox`;
-              }
-              const quote = c.quote.length > 60 ? c.quote.slice(0, 57) + "..." : c.quote;
-              process.stdout.write(`\n  ${chalk.bold(`[${i + 1}]`)} \ud83d\udcc4 ${c.file}, ${pageStr}\n`);
-              process.stdout.write(dim(`      "${quote}"`) + "\n");
-              process.stdout.write(`      ${bboxDetail}\n`);
+      if (ui) { ui.showCompletion(citations); ui.enableInput(); }
+      else {
+        // Stdout mode: show citation footer
+        if (citations.length > 0) {
+          process.stdout.write(`\n${dim("\u2500\u2500 Citations " + "\u2500".repeat(Math.max(0, (process.stdout.columns || 80) - 14)))}\n`);
+          for (let i = 0; i < citations.length; i++) {
+            const c = citations[i];
+            const pageStr = c.pages && c.pages.length > 0
+              ? `p.${c.pages.map((p: any) => p.page).join("-")}`
+              : `p.${c.page}`;
+            const hasBbox = c.bbox || (c.pages && c.pages.length > 0);
+            let bboxDetail: string;
+            if (c.pages && c.pages.length > 0) {
+              bboxDetail = `\u2705 bbox (${c.pages.length} pages)`;
+            } else if (c.bbox) {
+              bboxDetail = `\u2705 bbox (${c.bbox.x},${c.bbox.y} \u2192 ${Math.round(c.bbox.x + c.bbox.width)},${Math.round(c.bbox.y + c.bbox.height)})`;
+            } else {
+              bboxDetail = `\u26a0\ufe0f  no bbox`;
             }
+            const quote = c.quote.length > 60 ? c.quote.slice(0, 57) + "..." : c.quote;
+            process.stdout.write(`\n  ${chalk.bold(`[${i + 1}]`)} \ud83d\udcc4 ${c.file}, ${pageStr}\n`);
+            process.stdout.write(dim(`      "${quote}"`) + "\n");
+            process.stdout.write(`      ${bboxDetail}\n`);
           }
-
-          const elapsed = ((Date.now() - startTime) / 1000).toFixed(1);
-          const source = filesReadCount > 0
-            ? `${filesReadCount} file${filesReadCount !== 1 ? "s" : ""} read` : "wiki";
-          const citCount = citations.length > 0
-            ? ` \u00b7 ${citations.length} citation${citations.length !== 1 ? "s" : ""}` : "";
-          const stats = `${elapsed}s \u00b7 ${source}${citCount}`;
-          const cols = process.stdout.columns || 80;
-          const pad = Math.max(0, cols - stats.length - 4);
-          process.stdout.write(`\n${dim("\u2500\u2500 " + stats + " " + "\u2500".repeat(pad))}\n`);
         }
-      });
+
+        const elapsed = ((Date.now() - startTime) / 1000).toFixed(1);
+        const source = filesReadCount > 0
+          ? `${filesReadCount} file${filesReadCount !== 1 ? "s" : ""} read` : "wiki";
+        const citCount = citations.length > 0
+          ? ` \u00b7 ${citations.length} citation${citations.length !== 1 ? "s" : ""}` : "";
+        const stats = `${elapsed}s \u00b7 ${source}${citCount}`;
+        const cols = process.stdout.columns || 80;
+        const pad = Math.max(0, cols - stats.length - 4);
+        process.stdout.write(`\n${dim("\u2500\u2500 " + stats + " " + "\u2500".repeat(pad))}\n`);
+      }
       scheduler.onAgentEnd(event.messages as any[], doUpdate);
     }
 
@@ -489,40 +452,18 @@ export async function createChat(
     createWriteTool(folder),
   ];
 
-  const candidates = options.modelId
-    ? await resolveModelCandidates(options.modelId, options.authStorage, "query")
-    : [];
-  if (options.modelId && candidates.length === 0) {
-    throw new Error(`No usable model found for '${options.modelId}'. Configure Anthropic, OpenRouter, or OpenAI credentials.`);
-  }
+  const model = options.modelId ? await resolveModel(options.modelId, options.authStorage) : undefined;
 
-  const session = options.modelId
-    ? await createRetryingSession({
-        candidates,
-        validatePromptResult: validateQueryResult,
-        createSession: async (candidate) => {
-          const { session } = await createAgentSession({
-            cwd: folder,
-            resourceLoader: loader,
-            tools,
-            sessionManager: options.save ? await createKBSession(folder) : await continueKBSession(folder),
-            settingsManager: SettingsManager.inMemory({ compaction: { enabled: false } }),
-            thinkingLevel: "low",
-            ...(options.authStorage ? { authStorage: options.authStorage } : {}),
-            model: candidate.model,
-          });
-          return session;
-        },
-      })
-    : (await createAgentSession({
-        cwd: folder,
-        resourceLoader: loader,
-        tools,
-        sessionManager: options.save ? await createKBSession(folder) : await continueKBSession(folder),
-        settingsManager: SettingsManager.inMemory({ compaction: { enabled: false } }),
-        thinkingLevel: "low",
-        ...(options.authStorage ? { authStorage: options.authStorage } : {}),
-      })).session;
+  const { session } = await createAgentSession({
+    cwd: folder,
+    resourceLoader: loader,
+    tools,
+    sessionManager: options.save ? await createKBSession(folder) : await continueKBSession(folder),
+    settingsManager: SettingsManager.inMemory({ compaction: { enabled: false } }),
+    thinkingLevel: "low",
+    ...(options.authStorage ? { authStorage: options.authStorage } : {}),
+    ...(model ? { model } : {}),
+  });
 
   const display = subscribeDisplay(session, {
     modelId: options.modelId, authStorage: options.authStorage,

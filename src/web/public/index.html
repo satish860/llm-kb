@@ -3,11 +3,13 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>llm-kb</title>
+  <title>llm-kb — Knowledge Base</title>
+  <meta name="description" content="LLM-powered knowledge base with verified citations and source viewer">
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link href="https://fonts.googleapis.com/css2?family=Fraunces:opsz,wght@9..144,400;9..144,600;9..144,700&family=Instrument+Sans:wght@400;500;600&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
   <script src="https://cdn.jsdelivr.net/npm/marked/marked.min.js"></script>
-  <script src="https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.min.js"></script>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/pdf.js/4.9.155/pdf.min.mjs" type="module"></script>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/d3/7.9.0/d3.min.js"></script>
   <style>
     *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
     html, body { height: 100%; overflow: hidden; }
@@ -30,6 +32,7 @@
     #sessions-list { flex: 1; overflow-y: auto; padding: 4px 12px; }
     .session-item { display: block; width: 100%; padding: 8px 10px; border-radius: 6px; font-size: 13px; color: rgba(255,255,255,0.55); cursor: pointer; transition: all 0.15s; text-align: left; border: none; background: none; }
     .session-item:hover { background: rgba(255,255,255,0.06); color: rgba(255,255,255,0.8); }
+    .session-item.active { background: rgba(255,255,255,0.1); color: white; }
     .session-item .title { display: block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
     .session-item .meta { font-size: 10.5px; color: rgba(255,255,255,0.25); margin-top: 2px; }
     #sidebar-footer { padding: 12px; border-top: 1px solid rgba(255,255,255,0.08); }
@@ -37,16 +40,29 @@
     #new-chat-btn:hover { background: rgba(255,255,255,0.15); }
 
     /* ── Main ─── */
-    #main { flex: 1; display: flex; flex-direction: column; overflow: hidden; }
-    #header { display: flex; align-items: center; justify-content: space-between; padding: 12px 24px; border-bottom: 1px solid var(--paper-dim); }
+    #main { flex: 1; display: flex; flex-direction: column; overflow: hidden; position: relative; }
+    #header { display: flex; align-items: center; justify-content: space-between; padding: 12px 24px; border-bottom: 1px solid var(--paper-dim); background: var(--paper); z-index: 10; }
+    .header-left { display: flex; align-items: center; gap: 12px; }
+    .provider-badge { display: flex; align-items: center; gap: 5px; padding: 3px 10px; border-radius: 20px; font-size: 11px; font-weight: 600; letter-spacing: 0.3px; }
+    .provider-badge.ollama { background: rgba(13,125,133,0.1); color: var(--teal); border: 1px solid rgba(13,125,133,0.2); }
+    .provider-badge.cloud { background: rgba(79,45,127,0.1); color: var(--purple); border: 1px solid rgba(79,45,127,0.15); }
+    .provider-badge .provider-dot { width: 6px; height: 6px; border-radius: 50%; }
+    .provider-badge.ollama .provider-dot { background: var(--teal); animation: pulse 2s ease-in-out infinite; }
+    .provider-badge.cloud .provider-dot { background: var(--purple); }
     .tab { padding: 6px 16px; border-radius: 6px; font-size: 13px; font-weight: 500; color: var(--ink-faint); cursor: pointer; border: none; background: none; transition: all 0.15s; }
     .tab:hover { background: var(--paper-warm); color: var(--ink-soft); }
     .tab.active { background: var(--paper-warm); color: var(--ink); font-weight: 600; }
+
+    /* ── Content Area (holds both Chat and Wiki views) ─── */
+    #content-area { flex: 1; display: flex; overflow: hidden; }
+    #chat-panel { flex: 1; display: flex; flex-direction: column; overflow: hidden; transition: flex 0.3s ease; }
     #chat-container { flex: 1; overflow-y: auto; padding: 24px; }
     #chat-messages { max-width: 720px; margin: 0 auto; }
     #welcome { text-align: center; padding: 80px 20px; }
     #welcome h2 { font-family: 'Fraunces', Georgia, serif; font-size: 24px; font-weight: 600; color: var(--ink); }
     #welcome p { margin-top: 8px; font-size: 14px; color: var(--ink-faint); max-width: 400px; margin-left: auto; margin-right: auto; }
+    #welcome .feature-pills { display: flex; flex-wrap: wrap; gap: 6px; justify-content: center; margin-top: 20px; }
+    #welcome .pill { padding: 4px 12px; border-radius: 20px; font-size: 12px; font-weight: 500; background: var(--paper-warm); color: var(--ink-faint); border: 1px solid var(--paper-dim); }
     #input-area { padding: 4px 24px 16px; }
     #input-bar { max-width: 720px; margin: 0 auto; display: flex; align-items: center; gap: 8px; border: 1px solid var(--paper-dim); background: white; border-radius: 999px; padding: 8px 16px; box-shadow: 0 1px 3px rgba(0,0,0,0.04); transition: all 0.15s; }
     #input-bar:focus-within { border-color: var(--mid-light); box-shadow: 0 2px 8px rgba(0,0,0,0.06); }
@@ -55,28 +71,74 @@
     #send-btn { width: 28px; height: 28px; border-radius: 50%; border: none; background: var(--paper-dim); color: var(--mid-light); cursor: pointer; display: flex; align-items: center; justify-content: center; transition: all 0.15s; font-size: 14px; }
     #send-btn.ready { background: var(--purple); color: white; }
     #send-btn.ready:hover { background: var(--purple-soft); }
-    #status-bar { padding: 8px 24px; border-top: 1px solid var(--paper-dim); font-size: 11px; color: var(--mid); text-align: center; }
+    #status-bar { padding: 8px 24px; border-top: 1px solid var(--paper-dim); font-size: 11px; color: var(--mid); text-align: center; display: flex; align-items: center; justify-content: center; gap: 12px; }
     #status-bar .dot { display: inline-block; width: 5px; height: 5px; border-radius: 50%; background: var(--good); margin-right: 4px; vertical-align: middle; }
+
+    /* ── Wiki Panel ─── */
+    #wiki-panel { display: none; flex: 1; overflow-y: auto; padding: 32px 24px; }
+    #wiki-panel.visible { display: block; }
+    #wiki-content { max-width: 720px; margin: 0 auto; }
+    #wiki-content h1 { font-family: 'Fraunces', Georgia, serif; font-size: 22px; font-weight: 700; color: var(--ink); margin-bottom: 16px; }
+    #wiki-content h2 { font-family: 'Fraunces', Georgia, serif; font-size: 18px; font-weight: 600; color: var(--ink); margin-top: 24px; margin-bottom: 8px; padding-bottom: 6px; border-bottom: 1px solid var(--paper-dim); }
+    #wiki-content h3 { font-size: 15px; font-weight: 600; color: var(--ink); margin-top: 16px; margin-bottom: 6px; }
+    #wiki-content p { margin: 6px 0 10px; color: var(--ink-soft); line-height: 1.7; }
+    #wiki-content ul, #wiki-content ol { padding-left: 20px; margin: 4px 0 12px; }
+    #wiki-content li { margin: 3px 0; color: var(--ink-soft); }
+    #wiki-content em { color: var(--ink-faint); font-style: italic; }
+    #wiki-content strong { font-weight: 600; color: var(--ink); }
+    #wiki-content code { font-family: 'JetBrains Mono', monospace; font-size: 12px; background: var(--paper-warm); padding: 2px 5px; border-radius: 3px; }
+    #wiki-content hr { border: none; border-top: 2px solid var(--paper-dim); margin: 20px 0; }
+    #wiki-content blockquote { border-left: 3px solid var(--purple); padding-left: 12px; margin: 8px 0; color: var(--ink-faint); font-style: italic; }
+    #wiki-content table { width: 100%; border-collapse: collapse; margin: 8px 0; font-size: 13px; }
+    #wiki-content th { text-align: left; font-weight: 600; padding: 8px 12px; border-bottom: 2px solid var(--paper-dim); background: var(--paper-warm); font-size: 11px; text-transform: uppercase; letter-spacing: 0.5px; }
+    #wiki-content td { padding: 6px 12px; border-bottom: 1px solid var(--paper-dim); }
+    .wiki-empty { text-align: center; padding: 80px 20px; color: var(--ink-faint); }
+    .wiki-empty h3 { font-family: 'Fraunces', Georgia, serif; font-size: 18px; color: var(--mid); margin-bottom: 8px; }
+
+    /* ── Wiki Editor ─── */
+    .wiki-toolbar { display: flex; align-items: center; gap: 8px; padding: 10px 20px; border-bottom: 1px solid var(--paper-dim); background: var(--paper); position: sticky; top: 0; z-index: 5; }
+    .wiki-toolbar-label { font-size: 12px; font-weight: 600; color: var(--ink-faint); text-transform: uppercase; letter-spacing: 0.8px; }
+    .wiki-toolbar-spacer { flex: 1; }
+    .wiki-btn { padding: 5px 14px; border-radius: 6px; font-size: 12px; font-weight: 600; cursor: pointer; transition: all 0.15s; border: 1px solid var(--paper-dim); background: white; color: var(--ink-soft); }
+    .wiki-btn:hover { background: var(--paper-warm); border-color: var(--mid-light); }
+    .wiki-btn-primary { background: var(--purple); color: white; border-color: var(--purple); }
+    .wiki-btn-primary:hover { background: var(--purple-soft); border-color: var(--purple-soft); }
+    .wiki-btn-danger { color: var(--urgent); }
+    .wiki-btn-danger:hover { background: rgba(196,29,46,0.06); }
+    .wiki-editor-area { width: 100%; min-height: 400px; padding: 16px 20px; border: none; outline: none; resize: vertical; font-family: 'JetBrains Mono', monospace; font-size: 13px; line-height: 1.7; color: var(--ink-soft); background: white; border-top: 1px solid var(--paper-dim); }
+    .wiki-save-status { font-size: 11px; color: var(--good); transition: opacity 0.3s; }
+
+    /* ── Graph Panel ─── */
+    #graph-panel { display: none; flex: 1; flex-direction: column; overflow: hidden; }
+    #graph-panel.visible { display: flex; }
+    #graph-toolbar { display: flex; align-items: center; gap: 12px; padding: 12px 20px; border-bottom: 1px solid var(--paper-dim); background: var(--paper); }
+    #graph-toolbar label { font-size: 12px; font-weight: 600; color: var(--ink-faint); text-transform: uppercase; letter-spacing: 0.8px; }
+    #graph-search { flex: 0 0 220px; padding: 6px 12px; border: 1px solid var(--paper-dim); border-radius: 20px; font-size: 13px; outline: none; color: var(--ink); background: white; transition: border-color 0.15s; }
+    #graph-search:focus { border-color: var(--mid-light); }
+    #graph-stats { font-size: 11px; color: var(--mid); margin-left: auto; font-variant-numeric: tabular-nums; }
+    #graph-canvas { flex: 1; background: #faf8f5; cursor: grab; min-height: 0; position: relative; }
+    #graph-canvas:active { cursor: grabbing; }
+    #graph-canvas svg { position: absolute; top: 0; left: 0; width: 100%; height: 100%; }
+    .graph-tooltip { position: absolute; padding: 8px 14px; background: rgba(26,21,32,0.92); color: white; border-radius: 8px; font-size: 12px; pointer-events: none; z-index: 999; max-width: 260px; line-height: 1.5; box-shadow: 0 4px 16px rgba(0,0,0,0.2); backdrop-filter: blur(6px); opacity: 0; transition: opacity 0.15s; }
+    .graph-tooltip.show { opacity: 1; }
+    .graph-tooltip .tt-title { font-weight: 700; font-size: 13px; margin-bottom: 3px; }
+    .graph-tooltip .tt-connections { font-size: 11px; color: rgba(255,255,255,0.55); }
+    .graph-legend { display: flex; gap: 16px; align-items: center; }
+    .graph-legend-item { display: flex; align-items: center; gap: 4px; font-size: 11px; color: var(--mid); }
+    .graph-legend-dot { width: 8px; height: 8px; border-radius: 50%; }
 
     /* ── Messages ─── */
     .msg-user { display: flex; justify-content: flex-end; margin-bottom: 16px; }
     .msg-user .bubble { max-width: 75%; background: var(--purple); color: white; padding: 10px 16px; border-radius: 16px 16px 4px 16px; font-size: 14px; line-height: 1.5; }
     .msg-assistant { margin-bottom: 16px; max-width: 85%; }
     .msg-model { font-size: 12px; color: var(--mid); margin-bottom: 6px; }
-    .msg-thinking { margin-bottom: 8px; font-size: 13px; color: var(--ink-faint); border-left: 2px solid var(--border); padding-left: 10px; cursor: default; }
-    .msg-thinking .thinking-header { display: flex; align-items: center; gap: 8px; }
-    .msg-thinking .thinking-content { margin-top: 4px; white-space: pre-wrap; max-height: 200px; overflow-y: auto; font-size: 12px; opacity: 0.7; }
-    .msg-thinking.collapsed .thinking-content { max-height: 1.4em; overflow: hidden; cursor: pointer; }
-    .msg-thinking.collapsed .msg-thinking-text::after { content: ' (click to expand)'; font-size: 11px; opacity: 0.5; }
-    .msg-thinking.empty .thinking-content { display: none; }
-    .msg-thinking.empty .msg-thinking-text::after { content: ''; }
+    .msg-thinking { display: flex; align-items: center; gap: 8px; margin-bottom: 8px; }
     .thinking-dots { display: flex; gap: 3px; }
     .thinking-dots span { width: 6px; height: 6px; border-radius: 50%; background: var(--purple); animation: bounce 1.4s ease-in-out infinite; }
     .thinking-dots span:nth-child(2) { animation-delay: 0.15s; }
     .thinking-dots span:nth-child(3) { animation-delay: 0.3s; }
     @keyframes bounce { 0%,80%,100% { transform: translateY(0); } 40% { transform: translateY(-6px); } }
     .msg-tool { display: flex; align-items: center; gap: 8px; padding: 8px 12px; margin-bottom: 4px; border: 1px solid var(--paper-dim); background: white; border-radius: 8px; font-size: 13px; color: var(--ink-soft); }
-    .tool-elapsed { margin-left: auto; font-size: 11px; color: var(--ink-faint); font-variant-numeric: tabular-nums; }
     .tool-dot { width: 7px; height: 7px; border-radius: 50%; flex-shrink: 0; }
     .tool-dot.running { background: var(--teal); animation: pulse 1.5s ease-in-out infinite; }
     .tool-dot.done { background: var(--good); }
@@ -95,54 +157,89 @@
     .msg-answer td { padding:6px 12px; border-bottom:1px solid var(--paper-dim); }
     .msg-done { font-size: 11px; color: var(--mid); margin-top: 6px; }
     .citations-block { margin-top: 12px; border-top: 1px solid var(--paper-dim); padding-top: 10px; }
-    .citation-chip { display: flex; flex-direction: column; padding: 6px 10px; margin-bottom: 4px; border-radius: 8px; cursor: pointer; transition: background 0.15s; font-size: 13px; }
-    .citation-chip:hover { background: var(--paper-warm); }
+    .citations-label { font-size: 10px; font-weight: 600; letter-spacing: 1px; text-transform: uppercase; color: var(--mid); margin-bottom: 6px; }
+    .citation-chip { display: flex; flex-direction: column; padding: 8px 12px; margin-bottom: 4px; border-radius: 8px; cursor: pointer; transition: all 0.15s; font-size: 13px; border: 1px solid transparent; }
+    .citation-chip:hover { background: var(--paper-warm); border-color: var(--paper-dim); }
+    .citation-chip.selected { background: rgba(79,45,127,0.06); border-color: rgba(79,45,127,0.2); }
+    .citation-row { display: flex; align-items: center; gap: 6px; }
     .citation-num { font-weight: 700; color: var(--purple); }
-    .citation-file { color: var(--teal); }
-    .citation-quote { color: var(--ink-faint); font-size: 12px; margin-top: 2px; }
-    .citation-status { font-size: 11px; margin-top: 2px; }
-    .citation-chip.active { background: white; box-shadow: inset 0 0 0 1px var(--paper-dim); }
-    .citation-link { color: var(--purple); text-decoration: none; font-weight: 600; cursor: pointer; border-bottom: 1px dotted var(--purple); }
-    .citation-link:hover { background: rgba(79, 45, 127, 0.08); border-radius: 2px; }
+    .citation-file { color: var(--teal); font-weight: 500; }
+    .citation-page { color: var(--ink-faint); font-size: 12px; }
+    .citation-quote { color: var(--ink-faint); font-size: 12px; margin-top: 3px; font-style: italic; }
+    .citation-status { font-size: 11px; margin-top: 3px; display: flex; align-items: center; gap: 4px; }
+    .citation-status .badge { display: inline-flex; align-items: center; gap: 3px; padding: 1px 6px; border-radius: 10px; font-size: 10px; font-weight: 600; }
+    .badge-verified { background: rgba(45,138,78,0.1); color: var(--good); }
+    .badge-approximate { background: rgba(184,122,0,0.1); color: var(--warn); }
+    .badge-unverified { background: rgba(196,29,46,0.08); color: var(--urgent); }
+    .badge-nobbox { background: var(--paper-dim); color: var(--mid); }
 
-    /* ── Source Viewer ─── */
-    #source-viewer { width: 0; min-width: 0; opacity: 0; pointer-events: none; overflow: hidden; display: flex; flex-direction: column; background: white; border-left: 1px solid var(--paper-dim); transition: width 0.2s ease, opacity 0.2s ease; }
-    #source-viewer.open { width: min(44vw, 560px); min-width: 380px; opacity: 1; pointer-events: auto; }
-    #source-viewer-header { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 14px 16px; border-bottom: 1px solid var(--paper-dim); }
-    #source-viewer-title-wrap { min-width: 0; }
-    #source-viewer-title { font-size: 14px; font-weight: 600; color: var(--ink); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-    #source-viewer-meta { font-size: 12px; color: var(--ink-faint); margin-top: 2px; }
-    #source-viewer-close { width: 30px; height: 30px; border-radius: 50%; border: none; background: var(--paper-warm); color: var(--ink-soft); cursor: pointer; font-size: 18px; line-height: 1; }
-    #source-viewer-close:hover { background: var(--paper-dim); }
-    #source-viewer-toolbar { display: flex; align-items: center; justify-content: space-between; gap: 8px; padding: 10px 16px; border-bottom: 1px solid var(--paper-dim); background: #fcfbf8; }
-    .viewer-nav { display: flex; gap: 8px; }
-    .viewer-btn { border: 1px solid var(--paper-dim); background: white; color: var(--ink-soft); border-radius: 8px; padding: 6px 10px; font-size: 12px; cursor: pointer; }
-    .viewer-btn:hover:not(:disabled) { background: var(--paper-warm); }
-    .viewer-btn:disabled { opacity: 0.45; cursor: default; }
-    #source-viewer-page-indicator { font-size: 12px; color: var(--ink-faint); }
-    #source-viewer-body { flex: 1; overflow: auto; padding: 16px; background: #fbfaf8; }
-    #source-viewer-empty, #source-viewer-loading, #source-viewer-error { display: flex; align-items: center; justify-content: center; min-height: 180px; text-align: center; font-size: 13px; color: var(--ink-faint); }
-    #source-viewer-error { color: var(--urgent); }
-    #source-viewer-canvas-wrap { display: flex; justify-content: center; align-items: flex-start; }
-    #source-viewer-page-wrap { position: relative; display: inline-block; }
-    #source-viewer-canvas { display: block; background: white; border-radius: 10px; box-shadow: 0 8px 24px rgba(26, 21, 32, 0.08); }
-    #source-viewer-overlay { position: absolute; inset: 0; width: 100%; height: 100%; pointer-events: none; overflow: visible; }
-    .source-highlight { fill: rgba(255, 200, 0, 0.5); stroke: rgba(220, 160, 0, 1); stroke-width: 2; rx: 2; animation: sourcePulse 1.8s ease-in-out infinite; }
-    @keyframes sourcePulse { 0%,100% { fill-opacity: 0.5; } 50% { fill-opacity: 0.7; } }
-    #source-viewer-empty[hidden],
-    #source-viewer-loading[hidden],
-    #source-viewer-error[hidden],
-    #source-viewer-canvas-wrap[hidden] { display: none !important; }
-
-    @media (max-width: 1100px) {
-      #source-viewer.open { width: 50vw; min-width: 320px; }
+    /* ── Source Viewer Sheet ─── */
+    #source-viewer { 
+      width: 0; min-width: 0; overflow: hidden; 
+      background: white; border-left: 1px solid var(--paper-dim);
+      display: flex; flex-direction: column;
+      transition: width 0.3s ease, min-width 0.3s ease;
     }
+    #source-viewer.open { width: 50%; min-width: 400px; }
+    .sv-header { display: flex; align-items: center; justify-content: space-between; padding: 10px 16px; border-bottom: 1px solid var(--paper-dim); background: var(--paper); min-height: 48px; }
+    .sv-title { display: flex; align-items: center; gap: 8px; font-size: 13px; font-weight: 500; color: var(--ink); overflow: hidden; }
+    .sv-title .sv-filename { font-weight: 600; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; max-width: 220px; }
+    .sv-title .sv-page { color: var(--ink-faint); font-size: 12px; }
+    .sv-close { width: 28px; height: 28px; border: none; background: var(--paper-warm); border-radius: 6px; cursor: pointer; font-size: 16px; color: var(--ink-faint); display: flex; align-items: center; justify-content: center; transition: all 0.15s; flex-shrink: 0; }
+    .sv-close:hover { background: var(--paper-dim); color: var(--ink); }
+    .sv-body { flex: 1; overflow: auto; display: flex; align-items: flex-start; justify-content: center; padding: 16px; background: #e5e2dd; position: relative; }
+    .sv-canvas-wrap { position: relative; box-shadow: 0 2px 12px rgba(0,0,0,0.12); background: white; }
+    .sv-canvas-wrap canvas { display: block; max-width: 100%; height: auto; }
+    .sv-canvas-wrap svg { position: absolute; top: 0; left: 0; width: 100%; height: 100%; pointer-events: none; }
+    .sv-canvas-wrap svg rect { transition: fill 0.2s, stroke 0.2s; }
+    .sv-canvas-wrap svg rect.highlight-pulse { animation: highlightPulse 1.5s ease-in-out 3; }
+    @keyframes highlightPulse { 0%,100% { fill: rgba(79,45,127,0.12); } 50% { fill: rgba(79,45,127,0.28); } }
+    .sv-footer { display: flex; align-items: center; justify-content: space-between; padding: 8px 16px; border-top: 1px solid var(--paper-dim); background: var(--paper); }
+    .sv-nav { display: flex; align-items: center; gap: 8px; }
+    .sv-nav button { width: 28px; height: 28px; border: 1px solid var(--paper-dim); background: white; border-radius: 4px; cursor: pointer; font-size: 13px; color: var(--ink-soft); display: flex; align-items: center; justify-content: center; transition: all 0.15s; }
+    .sv-nav button:hover:not(:disabled) { background: var(--paper-warm); border-color: var(--mid-light); }
+    .sv-nav button:disabled { opacity: 0.4; cursor: default; }
+    .sv-nav .sv-page-info { font-size: 12px; color: var(--ink-faint); font-variant-numeric: tabular-nums; }
+    .sv-zoom { display: flex; align-items: center; gap: 4px; }
+    .sv-zoom button { padding: 4px 10px; border: 1px solid var(--paper-dim); background: white; border-radius: 4px; cursor: pointer; font-size: 11px; color: var(--ink-soft); transition: all 0.15s; }
+    .sv-zoom button:hover { background: var(--paper-warm); }
+    .sv-zoom button.active { background: var(--purple); color: white; border-color: var(--purple); }
+    .sv-loading { display: flex; align-items: center; justify-content: center; flex: 1; color: var(--mid); font-size: 13px; gap: 8px; }
+    .sv-loading .spinner { width: 16px; height: 16px; border: 2px solid var(--paper-dim); border-top-color: var(--purple); border-radius: 50%; animation: spin 0.7s linear infinite; }
+    @keyframes spin { to { transform: rotate(360deg); } }
 
-    @media (max-width: 900px) {
-      #app { position: relative; }
-      #source-viewer { position: absolute; top: 0; right: 0; height: 100%; z-index: 20; box-shadow: -16px 0 40px rgba(26, 21, 32, 0.12); }
-      #source-viewer.open { width: 100%; min-width: 0; }
-    }
+    /* ── Dark Mode ─── */
+    [data-theme="dark"] { --paper:#1a1720; --paper-warm:#221e28; --paper-dim:#2e2a34; --ink:#e8e4e0; --ink-soft:#b8b4b0; --ink-faint:#8a8680; --mid:#6a6660; --mid-light:#444040; --purple:#8B6CC0; --purple-soft:#A088D0; --purple-bg:#12101a; --teal:#15b8c2; --good:#4ade80; --warn:#f59e0b; --urgent:#ef4444; }
+    [data-theme="dark"] body { color: var(--ink-soft); background: var(--paper); }
+    [data-theme="dark"] #sidebar { background: var(--purple-bg); border-right-color: rgba(255,255,255,0.04); }
+    [data-theme="dark"] #header { background: var(--paper); border-bottom-color: var(--paper-dim); }
+    [data-theme="dark"] #input-bar { background: var(--paper-warm); border-color: var(--paper-dim); }
+    [data-theme="dark"] #input-bar input { color: var(--ink); }
+    [data-theme="dark"] #input-bar:focus-within { border-color: var(--mid-light); box-shadow: 0 2px 8px rgba(0,0,0,0.2); }
+    [data-theme="dark"] #send-btn { background: var(--paper-dim); color: var(--mid); }
+    [data-theme="dark"] .msg-answer { background: var(--paper-warm); color: var(--ink-soft); }
+    [data-theme="dark"] .msg-tool { background: var(--paper-warm); border-color: var(--paper-dim); }
+    [data-theme="dark"] .msg-answer code { background: var(--paper-dim); }
+    [data-theme="dark"] .msg-answer th { background: var(--paper-dim); }
+    [data-theme="dark"] .citation-chip:hover { background: var(--paper-warm); border-color: var(--paper-dim); }
+    [data-theme="dark"] .citation-chip.selected { background: rgba(139,108,192,0.1); border-color: rgba(139,108,192,0.3); }
+    [data-theme="dark"] #source-viewer { background: var(--paper-warm); border-left-color: var(--paper-dim); }
+    [data-theme="dark"] .sv-header, [data-theme="dark"] .sv-footer { background: var(--paper); }
+    [data-theme="dark"] .sv-body { background: #151218; }
+    [data-theme="dark"] .sv-nav button, [data-theme="dark"] .sv-zoom button { background: var(--paper-warm); border-color: var(--paper-dim); color: var(--ink-soft); }
+    [data-theme="dark"] .sv-close { background: var(--paper-dim); }
+    [data-theme="dark"] #status-bar { border-top-color: var(--paper-dim); }
+    [data-theme="dark"] .tab:hover { background: var(--paper-warm); }
+    [data-theme="dark"] .tab.active { background: var(--paper-warm); color: var(--ink); }
+    [data-theme="dark"] .wiki-btn { background: var(--paper-warm); border-color: var(--paper-dim); color: var(--ink-soft); }
+    [data-theme="dark"] .wiki-editor-area { background: var(--paper-warm); color: var(--ink-soft); border-top-color: var(--paper-dim); }
+    [data-theme="dark"] #graph-canvas { background: var(--paper); }
+    [data-theme="dark"] #graph-search { background: var(--paper-warm); border-color: var(--paper-dim); color: var(--ink); }
+    [data-theme="dark"] .graph-toolbar { background: var(--paper); border-bottom-color: var(--paper-dim); }
+    [data-theme="dark"] .wiki-toolbar { background: var(--paper); border-bottom-color: var(--paper-dim); }
+    [data-theme="dark"] .pill { background: var(--paper-warm); border-color: var(--paper-dim); color: var(--ink-faint); }
+    .theme-toggle { width: 32px; height: 32px; border: 1px solid var(--paper-dim); background: var(--paper-warm); border-radius: 8px; cursor: pointer; font-size: 16px; display: flex; align-items: center; justify-content: center; transition: all 0.15s; }
+    .theme-toggle:hover { background: var(--paper-dim); }
   </style>
 </head>
 <body>
@@ -151,8 +248,9 @@
       <div id="sidebar-brand"><h1 class="font-serif">llm-kb</h1><div class="subtitle">Knowledge Base</div></div>
       <nav id="sidebar-nav">
         <div class="nav-section-label">Navigate</div>
-        <button class="nav-item active" data-tab="chat">💬 Chat</button>
-        <button class="nav-item" data-tab="wiki">📚 Wiki</button>
+        <button class="nav-item active" data-tab="chat" id="nav-chat">💬 Chat</button>
+        <button class="nav-item" data-tab="wiki" id="nav-wiki">📚 Wiki</button>
+        <button class="nav-item" data-tab="graph" id="nav-graph">🕸️ Graph</button>
       </nav>
       <div class="nav-section-label" style="padding:8px 20px 4px;">Sessions</div>
       <div id="sessions-list"><div style="padding:12px 10px;font-size:12px;color:rgba(255,255,255,0.25);">Loading...</div></div>
@@ -160,96 +258,281 @@
     </aside>
     <div id="main">
       <header id="header">
-        <div class="font-serif" style="font-size:15px;font-weight:600;color:var(--ink);">Chat</div>
+        <div class="header-left">
+          <div class="font-serif" style="font-size:15px;font-weight:600;color:var(--ink);" id="header-title">Chat</div>
+          <div class="provider-badge ollama" id="provider-badge">
+            <span class="provider-dot"></span>
+            <span id="provider-label">Ollama Local</span>
+          </div>
+        </div>
         <div id="header-tabs">
-          <button class="tab active" data-tab="chat">Chat</button>
-          <button class="tab" data-tab="wiki">Wiki</button>
+          <button class="tab active" data-tab="chat" id="tab-chat">Chat</button>
+          <button class="tab" data-tab="wiki" id="tab-wiki">Wiki</button>
+          <button class="tab" data-tab="graph" id="tab-graph">Graph</button>
+          <button class="theme-toggle" id="theme-toggle" title="Toggle dark mode">🌙</button>
         </div>
       </header>
-      <div id="chat-container">
-        <div id="chat-messages">
-          <div id="welcome">
-            <h2 class="font-serif">What would you like to investigate?</h2>
-            <p>Ask about any document in the knowledge base. Answers include verified citations with bounding boxes.</p>
+      <div id="content-area">
+        <!-- Chat Panel -->
+        <div id="chat-panel">
+          <div id="chat-container">
+            <div id="chat-messages">
+              <div id="welcome">
+                <h2 class="font-serif">What would you like to investigate?</h2>
+                <p>Ask about any document in the knowledge base. Answers include verified citations with bounding boxes.</p>
+                <div class="feature-pills">
+                  <span class="pill">📄 PDF Source Viewer</span>
+                  <span class="pill">✅ Verified Citations</span>
+                  <span class="pill">📚 Wiki Knowledge</span>
+                  <span class="pill">🔍 Bbox Highlights</span>
+                </div>
+              </div>
+            </div>
+          </div>
+          <div id="input-area">
+            <div id="input-bar">
+              <input type="text" id="chat-input" placeholder="Ask anything..." autocomplete="off" />
+              <button id="send-btn" aria-label="Send">↑</button>
+            </div>
+          </div>
+        </div>
+
+        <!-- Wiki Panel (hidden by default) -->
+        <div id="wiki-panel">
+          <div class="wiki-toolbar">
+            <span class="wiki-toolbar-label">📚 Wiki</span>
+            <span class="wiki-save-status" id="wiki-save-status"></span>
+            <span class="wiki-toolbar-spacer"></span>
+            <button class="wiki-btn" id="wiki-edit-btn" title="Edit wiki markdown">✏️ Edit</button>
+            <button class="wiki-btn wiki-btn-primary" id="wiki-save-btn" style="display:none;" title="Save changes">💾 Save</button>
+            <button class="wiki-btn wiki-btn-danger" id="wiki-cancel-btn" style="display:none;" title="Discard changes">✕ Cancel</button>
+          </div>
+          <div id="wiki-content">
+            <div class="wiki-empty">
+              <h3 class="font-serif">Loading wiki...</h3>
+            </div>
+          </div>
+          <textarea id="wiki-editor" class="wiki-editor-area" style="display:none;" spellcheck="false"></textarea>
+        </div>
+
+        <!-- Knowledge Graph Panel (hidden by default) -->
+        <div id="graph-panel">
+          <div id="graph-toolbar">
+            <label>🕸️ Knowledge Graph</label>
+            <input type="text" id="graph-search" placeholder="Search concepts..." autocomplete="off" />
+            <div class="graph-legend">
+              <div class="graph-legend-item"><span class="graph-legend-dot" style="background:var(--purple);"></span> Concept</div>
+              <div class="graph-legend-item"><span class="graph-legend-dot" style="background:var(--teal);"></span> Source</div>
+              <div class="graph-legend-item"><span class="graph-legend-dot" style="background:var(--warn); border-radius: 2px; transform: rotate(45deg);"></span> Query</div>
+            </div>
+            <span id="graph-stats"></span>
+          </div>
+          <div id="graph-canvas"></div>
+          <div class="graph-tooltip" id="graph-tooltip"></div>
+        </div>
+
+        <!-- Source Viewer Sheet (slides in from right) -->
+        <div id="source-viewer">
+          <div class="sv-header">
+            <div class="sv-title">
+              <span>📄</span>
+              <span class="sv-filename" id="sv-filename">—</span>
+              <span class="sv-page" id="sv-page-label">—</span>
+            </div>
+            <button class="sv-close" id="sv-close" title="Close (Esc)">✕</button>
+          </div>
+          <div class="sv-body" id="sv-body">
+            <div class="sv-loading" id="sv-loading" style="display:none;">
+              <div class="spinner"></div>
+              <span>Loading PDF...</span>
+            </div>
+            <div class="sv-canvas-wrap" id="sv-canvas-wrap" style="display:none;">
+              <canvas id="sv-canvas"></canvas>
+              <svg id="sv-highlights" xmlns="http://www.w3.org/2000/svg"></svg>
+            </div>
+          </div>
+          <div class="sv-footer">
+            <div class="sv-nav">
+              <button id="sv-prev" title="Previous page">◄</button>
+              <span class="sv-page-info" id="sv-page-info">—</span>
+              <button id="sv-next" title="Next page">►</button>
+            </div>
+            <div class="sv-zoom">
+              <button data-zoom="fit" class="active" id="sv-zoom-fit">Fit</button>
+              <button data-zoom="100" id="sv-zoom-100">100%</button>
+              <button data-zoom="200" id="sv-zoom-200">200%</button>
+            </div>
           </div>
         </div>
       </div>
-      <div id="input-area">
-        <div id="input-bar">
-          <input type="text" id="chat-input" placeholder="Ask anything..." autocomplete="off" />
-          <button id="send-btn" aria-label="Send">↑</button>
-        </div>
+      <div id="status-bar">
+        <span><span class="dot" id="status-dot"></span><span id="status-text">Connecting...</span></span>
       </div>
-      <div id="status-bar"><span class="dot"></span><span id="status-text">Connecting...</span></div>
     </div>
-    <aside id="source-viewer" aria-hidden="true">
-      <div id="source-viewer-header">
-        <div id="source-viewer-title-wrap">
-          <div id="source-viewer-title">Source Viewer</div>
-          <div id="source-viewer-meta">Click a citation to inspect the original page.</div>
-        </div>
-        <button id="source-viewer-close" aria-label="Close source viewer">×</button>
-      </div>
-      <div id="source-viewer-toolbar">
-        <div class="viewer-nav">
-          <button class="viewer-btn" id="source-viewer-prev">← Prev</button>
-          <button class="viewer-btn" id="source-viewer-next">Next →</button>
-        </div>
-        <div id="source-viewer-page-indicator">Page —</div>
-      </div>
-      <div id="source-viewer-body">
-        <div id="source-viewer-empty">Click any citation chip to open the cited PDF page here.</div>
-        <div id="source-viewer-loading" hidden>Loading PDF…</div>
-        <div id="source-viewer-error" hidden></div>
-        <div id="source-viewer-canvas-wrap" hidden>
-          <div id="source-viewer-page-wrap">
-            <canvas id="source-viewer-canvas"></canvas>
-            <svg id="source-viewer-overlay" aria-hidden="true"></svg>
-          </div>
-        </div>
-      </div>
-    </aside>
   </div>
 
-<script>
+<script type="module">
+// ── pdf.js setup ────────────────────────────────────────────────
+const pdfjsLib = await import('https://cdnjs.cloudflare.com/ajax/libs/pdf.js/4.9.155/pdf.min.mjs');
+pdfjsLib.GlobalWorkerOptions.workerSrc = 'https://cdnjs.cloudflare.com/ajax/libs/pdf.js/4.9.155/pdf.worker.min.mjs';
+
 // ── State ────────────────────────────────────────────────────
 let ws = null;
 let ready = false;
 let streaming = false;
-let currentAssistant = null; // DOM container for current assistant response
-let answerEl = null;         // current answer bubble element
-let answerText = '';         // raw accumulated markdown
-let viewerPdf = null;        // active PDF document in Source Viewer
-let viewerFile = '';         // current PDF filename
-let viewerPage = 1;          // current page number in Source Viewer
-let viewerCitation = null;   // current citation shown in Source Viewer
-let activeCitationChip = null;
-let resizeTimer = null;
+let currentAssistant = null;
+let answerEl = null;
+let answerText = '';
+let currentTab = 'chat';
+let currentModel = '';
 
+// Source Viewer state
+let svPdfDoc = null;
+let svCurrentPage = 1;
+let svTotalPages = 0;
+let svFilename = '';
+let svHighlights = [];
+let svZoom = 'fit';
+let pdfCache = {};
+
+// ── DOM refs ────────────────────────────────────────────────────
 const messagesEl = document.getElementById('chat-messages');
 const chatContainer = document.getElementById('chat-container');
 const input = document.getElementById('chat-input');
 const sendBtn = document.getElementById('send-btn');
 const statusText = document.getElementById('status-text');
+const statusDot = document.getElementById('status-dot');
 const welcomeEl = document.getElementById('welcome');
-const sourceViewerEl = document.getElementById('source-viewer');
-const sourceViewerTitle = document.getElementById('source-viewer-title');
-const sourceViewerMeta = document.getElementById('source-viewer-meta');
-const sourceViewerPageIndicator = document.getElementById('source-viewer-page-indicator');
-const sourceViewerBody = document.getElementById('source-viewer-body');
-const sourceViewerEmpty = document.getElementById('source-viewer-empty');
-const sourceViewerLoading = document.getElementById('source-viewer-loading');
-const sourceViewerError = document.getElementById('source-viewer-error');
-const sourceViewerCanvasWrap = document.getElementById('source-viewer-canvas-wrap');
-const sourceViewerCanvas = document.getElementById('source-viewer-canvas');
-const sourceViewerOverlay = document.getElementById('source-viewer-overlay');
-const sourceViewerPageWrap = document.getElementById('source-viewer-page-wrap');
-const sourceViewerPrevBtn = document.getElementById('source-viewer-prev');
-const sourceViewerNextBtn = document.getElementById('source-viewer-next');
-const sourceViewerCloseBtn = document.getElementById('source-viewer-close');
+const chatPanel = document.getElementById('chat-panel');
+const wikiPanel = document.getElementById('wiki-panel');
+const wikiContent = document.getElementById('wiki-content');
+const sourceViewer = document.getElementById('source-viewer');
+const headerTitle = document.getElementById('header-title');
+const providerBadge = document.getElementById('provider-badge');
+const providerLabel = document.getElementById('provider-label');
 
-if (window.pdfjsLib) {
-  window.pdfjsLib.GlobalWorkerOptions.workerSrc = 'https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.worker.min.js';
+// ── Tab Switching ────────────────────────────────────────────────
+const graphPanel = document.getElementById('graph-panel');
+
+function switchTab(tab) {
+  currentTab = tab;
+  // Update nav items
+  document.querySelectorAll('.nav-item').forEach(el => el.classList.toggle('active', el.dataset.tab === tab));
+  document.querySelectorAll('.tab').forEach(el => el.classList.toggle('active', el.dataset.tab === tab));
+  // Update title
+  headerTitle.textContent = tab === 'chat' ? 'Chat' : tab === 'wiki' ? 'Wiki' : 'Knowledge Graph';
+  // Show/hide panels
+  chatPanel.style.display = tab === 'chat' ? 'flex' : 'none';
+  wikiPanel.classList.toggle('visible', tab === 'wiki');
+  graphPanel.classList.toggle('visible', tab === 'graph');
+  if (tab === 'wiki') loadWiki();
+  if (tab === 'graph') loadGraph();
+}
+
+document.querySelectorAll('[data-tab]').forEach(el => {
+  el.addEventListener('click', () => switchTab(el.dataset.tab));
+});
+
+// ── Wiki Loading & Editor ────────────────────────────────────────
+let wikiLoaded = false;
+let wikiRawContent = '';
+let wikiEditing = false;
+const wikiEditor = document.getElementById('wiki-editor');
+const wikiEditBtn = document.getElementById('wiki-edit-btn');
+const wikiSaveBtn = document.getElementById('wiki-save-btn');
+const wikiCancelBtn = document.getElementById('wiki-cancel-btn');
+const wikiSaveStatus = document.getElementById('wiki-save-status');
+
+async function loadWiki(forceReload) {
+  if (wikiLoaded && !forceReload) return;
+  try {
+    const res = await fetch('/api/wiki');
+    const data = await res.json();
+    if (data.content && data.content.trim()) {
+      wikiRawContent = data.content;
+      wikiContent.innerHTML = marked.parse(data.content);
+      wikiLoaded = true;
+    } else {
+      wikiRawContent = '';
+      wikiContent.innerHTML = `
+        <div class="wiki-empty">
+          <h3 class="font-serif">No wiki entries yet</h3>
+          <p style="color:var(--mid);margin-top:8px;">The wiki grows automatically as you ask questions. Each answer contributes new knowledge organized by concept.</p>
+        </div>`;
+    }
+  } catch (e) {
+    wikiContent.innerHTML = '<div class="wiki-empty"><h3 class="font-serif">Failed to load wiki</h3></div>';
+    console.error('Wiki load failed:', e);
+  }
+}
+
+function enterEditMode() {
+  wikiEditing = true;
+  wikiEditor.value = wikiRawContent;
+  wikiEditor.style.display = 'block';
+  wikiContent.style.display = 'none';
+  wikiEditBtn.style.display = 'none';
+  wikiSaveBtn.style.display = '';
+  wikiCancelBtn.style.display = '';
+  wikiSaveStatus.textContent = '';
+  // Auto-resize editor
+  wikiEditor.style.height = 'auto';
+  wikiEditor.style.height = Math.max(400, wikiPanel.clientHeight - 80) + 'px';
+  wikiEditor.focus();
+}
+
+function exitEditMode() {
+  wikiEditing = false;
+  wikiEditor.style.display = 'none';
+  wikiContent.style.display = '';
+  wikiEditBtn.style.display = '';
+  wikiSaveBtn.style.display = 'none';
+  wikiCancelBtn.style.display = 'none';
+}
+
+async function saveWiki() {
+  const content = wikiEditor.value;
+  wikiSaveStatus.textContent = 'Saving...';
+  wikiSaveStatus.style.color = 'var(--mid)';
+  try {
+    const res = await fetch('/api/wiki', {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ content }),
+    });
+    if (res.ok) {
+      wikiRawContent = content;
+      wikiContent.innerHTML = marked.parse(content);
+      exitEditMode();
+      wikiSaveStatus.textContent = '✅ Saved';
+      wikiSaveStatus.style.color = 'var(--good)';
+      // Invalidate graph cache so it reloads with new data
+      graphLoaded = false;
+      setTimeout(() => { wikiSaveStatus.textContent = ''; }, 3000);
+    } else {
+      wikiSaveStatus.textContent = '❌ Save failed';
+      wikiSaveStatus.style.color = 'var(--urgent)';
+    }
+  } catch (e) {
+    wikiSaveStatus.textContent = '❌ Save failed';
+    wikiSaveStatus.style.color = 'var(--urgent)';
+    console.error('Wiki save error:', e);
+  }
+}
+
+wikiEditBtn.addEventListener('click', enterEditMode);
+wikiSaveBtn.addEventListener('click', saveWiki);
+wikiCancelBtn.addEventListener('click', () => {
+  exitEditMode();
+  wikiSaveStatus.textContent = '';
+});
+
+// ── Provider Badge ───────────────────────────────────────────────
+function updateProviderBadge(model) {
+  currentModel = model || '';
+  const isOllama = currentModel.includes('llama') || currentModel.includes('ollama') || currentModel.includes('mistral') || currentModel.includes('gemma') || currentModel.includes('phi') || currentModel.includes('qwen');
+  providerBadge.className = 'provider-badge ' + (isOllama ? 'ollama' : 'cloud');
+  providerLabel.textContent = isOllama ? `Ollama · ${currentModel}` : currentModel;
 }
 
 // ── WebSocket ────────────────────────────────────────────────
@@ -267,7 +550,7 @@ function connectWS() {
   ws.onclose = () => {
     ready = false;
     statusText.textContent = 'Disconnected — reconnecting...';
-    document.querySelector('#status-bar .dot').style.background = 'var(--urgent)';
+    statusDot.style.background = 'var(--urgent)';
     setTimeout(connectWS, 2000);
   };
 }
@@ -280,7 +563,7 @@ function handleEvent(data) {
     case 'ready':
       ready = true;
       streaming = false;
-      document.querySelector('#status-bar .dot').style.background = 'var(--good)';
+      statusDot.style.background = 'var(--good)';
       loadStatus();
       break;
     case 'error':
@@ -293,21 +576,19 @@ function handleEvent(data) {
     case 'status':
       ensureAssistant();
       currentAssistant.querySelector('.msg-model').textContent = '⟡ ' + data.model;
+      updateProviderBadge(data.model);
       break;
     case 'thinking_start':
       ensureAssistant();
-      if (answerEl) answerEl = null; // new phase — allow new answer bubble
       showThinking(true);
       break;
     case 'thinking_delta':
-      appendThinkingText(data.text);
       break;
     case 'thinking_end':
-      collapseThinking();
+      showThinking(false);
       break;
     case 'tool_start':
       ensureAssistant();
-      if (answerEl) answerEl = null; // new phase — allow new answer bubble after tools
       addToolCard(data.id, data.label, data.name);
       break;
     case 'tool_end':
@@ -328,7 +609,6 @@ function handleEvent(data) {
       break;
     case 'citations':
       renderCitations(data.data);
-      preloadCitationPdfs(data.data);
       break;
     case 'done':
       finishResponse(data);
@@ -343,23 +623,21 @@ function handleEvent(data) {
 function sendMessage(text) {
   if (!ready) { addSystemMessage('Session still initializing, please wait...'); return; }
   if (streaming || !text.trim()) return;
-  if (welcomeEl) { welcomeEl.remove(); }
+  // Switch to chat tab if on wiki
+  if (currentTab !== 'chat') switchTab('chat');
+  if (welcomeEl && welcomeEl.parentNode) { welcomeEl.remove(); }
   streaming = true;
   input.disabled = true;
 
-  // Add user bubble
   const div = document.createElement('div');
   div.className = 'msg-user';
   div.innerHTML = `<div class="bubble">${escapeHtml(text)}</div>`;
   messagesEl.appendChild(div);
   scrollToBottom();
 
-  // Reset assistant state
   currentAssistant = null;
   answerEl = null;
   answerText = '';
-  answerSegments = [];
-  activeThinkingEl = null;
 
   ws.send(JSON.stringify({ type: 'message', text }));
 }
@@ -391,96 +669,50 @@ function ensureAssistant() {
   messagesEl.appendChild(currentAssistant);
 }
 
-let activeThinkingEl = null;
-
 function showThinking(show) {
   if (!currentAssistant) return;
-  if (show) {
-    const el = document.createElement('div');
+  let el = currentAssistant.querySelector('.msg-thinking');
+  if (show && !el) {
+    el = document.createElement('div');
     el.className = 'msg-thinking';
-    el.innerHTML = `<div class="thinking-header"><div class="thinking-dots"><span></span><span></span><span></span></div><span class="msg-thinking-text">Thinking</span></div><div class="thinking-content"></div>`;
+    el.innerHTML = `<div class="thinking-dots"><span></span><span></span><span></span></div><span class="msg-thinking-text">Thinking...</span>`;
     currentAssistant.appendChild(el);
-    activeThinkingEl = el;
     scrollToBottom();
+  } else if (!show && el) {
+    el.remove();
   }
 }
-
-function appendThinkingText(text) {
-  if (!activeThinkingEl) return;
-  const content = activeThinkingEl.querySelector('.thinking-content');
-  if (content) {
-    content.textContent += text;
-    scrollToBottom();
-  }
-}
-
-function collapseThinking() {
-  if (!activeThinkingEl) return;
-  const dots = activeThinkingEl.querySelector('.thinking-dots');
-  if (dots) dots.remove();
-  const content = activeThinkingEl.querySelector('.thinking-content');
-  if (content && content.textContent.trim().length > 0) {
-    // Collapse to show first line with toggle
-    activeThinkingEl.classList.add('collapsed');
-    activeThinkingEl.onclick = () => activeThinkingEl.classList.toggle('collapsed');
-  } else {
-    // No thinking text — just show "Thought" label
-    activeThinkingEl.classList.add('collapsed');
-    activeThinkingEl.classList.add('empty');
-  }
-  activeThinkingEl = null;
-}
-
-const toolTimers = {};
 
 function addToolCard(id, label, name) {
   if (!currentAssistant) return;
   const el = document.createElement('div');
   el.className = 'msg-tool';
   el.dataset.toolId = id;
-  el.innerHTML = `<span class="tool-dot running"></span><span>${escapeHtml(label)}</span><span class="tool-elapsed"></span>`;
+  el.innerHTML = `<span class="tool-dot running"></span><span>${escapeHtml(label)}</span>`;
   currentAssistant.appendChild(el);
   scrollToBottom();
-  // Start elapsed timer
-  const start = Date.now();
-  const timerEl = el.querySelector('.tool-elapsed');
-  toolTimers[id] = setInterval(() => {
-    const secs = ((Date.now() - start) / 1000).toFixed(0);
-    timerEl.textContent = `${secs}s`;
-  }, 1000);
 }
 
 function updateToolCard(id, isError) {
   if (!currentAssistant) return;
-  // Stop timer
-  if (toolTimers[id]) { clearInterval(toolTimers[id]); delete toolTimers[id]; }
-  const el = currentAssistant.querySelector(`.msg-tool[data-tool-id="${id}"]`);
-  if (!el) return;
-  const dot = el.querySelector('.tool-dot');
-  if (dot) { dot.classList.remove('running'); dot.classList.add(isError ? 'error' : 'done'); }
-  const timer = el.querySelector('.tool-elapsed');
-  if (timer) timer.textContent = '';
+  const el = currentAssistant.querySelector(`.msg-tool[data-tool-id="${id}"] .tool-dot`);
+  if (el) {
+    el.classList.remove('running');
+    el.classList.add(isError ? 'error' : 'done');
+  }
 }
-
-/** All answer segments — each gets its own div for interleaving with tools/thinking */
-let answerSegments = [];
 
 function ensureAnswerBubble() {
   if (answerEl) return;
   if (!currentAssistant) ensureAssistant();
   answerEl = document.createElement('div');
   answerEl.className = 'msg-answer';
-  answerEl._segmentStart = answerText.length;
   currentAssistant.appendChild(answerEl);
-  answerSegments.push(answerEl);
 }
 
 function renderAnswer() {
   if (!answerEl) return;
-  // Get text for this segment only
-  const segStart = answerEl._segmentStart || 0;
-  let display = answerText.slice(segStart);
-  // Strip CITATIONS block from display
+  let display = answerText;
   const citIdx = display.search(/^CITATIONS:\s*$/im);
   if (citIdx >= 0) display = display.slice(0, citIdx).trimEnd();
   try {
@@ -490,73 +722,49 @@ function renderAnswer() {
   }
 }
 
-/** Final render — re-render all segments to strip CITATIONS from whichever has it */
-function renderAllAnswers() {
-  for (const seg of answerSegments) {
-    const segStart = seg._segmentStart || 0;
-    // Find end: next segment's start, or end of answerText
-    const segIdx = answerSegments.indexOf(seg);
-    const segEnd = segIdx < answerSegments.length - 1 ? answerSegments[segIdx + 1]._segmentStart : answerText.length;
-    let display = answerText.slice(segStart, segEnd);
-    const citIdx = display.search(/^CITATIONS:\s*$/im);
-    if (citIdx >= 0) display = display.slice(0, citIdx).trimEnd();
-    if (!display.trim()) { seg.style.display = 'none'; continue; }
-    try {
-      seg.innerHTML = marked.parse(display);
-    } catch {
-      seg.textContent = display;
-    }
-  }
-}
-
-/** Store citations for inline linking */
-let lastCitations = [];
-
-function linkInlineCitations(citations) {
-  if (!currentAssistant) return;
-  // Find all [N] references in answer segments and make them clickable
-  const answerEls = currentAssistant.querySelectorAll('.msg-answer');
-  for (const el of answerEls) {
-    el.innerHTML = el.innerHTML.replace(/\[(\d+)\]/g, (match, num) => {
-      const idx = parseInt(num, 10) - 1;
-      if (idx >= 0 && idx < citations.length) {
-        return `<a class="citation-link" href="#" data-citation-idx="${idx}" title="${escapeHtml(citations[idx].file)}, p.${citations[idx].page}">[${num}]</a>`;
-      }
-      return match;
-    });
-  }
-  // Add click handlers
-  currentAssistant.querySelectorAll('.citation-link').forEach(link => {
-    link.addEventListener('click', (e) => {
-      e.preventDefault();
-      const idx = parseInt(link.dataset.citationIdx, 10);
-      const chip = currentAssistant.querySelectorAll('.citation-chip')[idx];
-      openSourceViewer(citations[idx], chip);
-    });
-  });
-}
-
 function renderCitations(citations) {
   if (!currentAssistant || !citations.length) return;
-  lastCitations = citations;
   const block = document.createElement('div');
   block.className = 'citations-block';
+  block.innerHTML = '<div class="citations-label">Citations</div>';
   for (let i = 0; i < citations.length; i++) {
     const c = citations[i];
     const pageStr = c.pages ? `p.${c.pages.map(p => p.page).join('-')}` : `p.${c.page}`;
     const hasBbox = c.bbox || (c.pages && c.pages.length > 0);
-    const statusIcon = hasBbox ? '✅' : '⚠️';
     const quote = c.quote.length > 70 ? c.quote.slice(0, 67) + '...' : c.quote;
+
+    // Determine verification badge
+    let badgeHtml;
+    if (hasBbox) {
+      if (c.bbox && c.bbox.width > 0) {
+        badgeHtml = '<span class="badge badge-verified">✅ Verified</span>';
+      } else if (c.pages && c.pages.length > 0 && c.pages[0].width > 0) {
+        badgeHtml = '<span class="badge badge-verified">✅ Verified</span>';
+      } else {
+        badgeHtml = '<span class="badge badge-approximate">⚠️ Approximate</span>';
+      }
+    } else {
+      badgeHtml = '<span class="badge badge-nobbox">— No bbox</span>';
+    }
 
     const chip = document.createElement('div');
     chip.className = 'citation-chip';
     chip.innerHTML = `
-      <div><span class="citation-num">[${i+1}]</span> 📄 <span class="citation-file">${escapeHtml(c.file)}</span>, ${pageStr}</div>
+      <div class="citation-row">
+        <span class="citation-num">[${i+1}]</span>
+        <span>📄</span>
+        <span class="citation-file">${escapeHtml(c.file)}</span>
+        <span class="citation-page">${pageStr}</span>
+      </div>
       <span class="citation-quote">"${escapeHtml(quote)}"</span>
-      <span class="citation-status">${statusIcon} ${hasBbox ? 'bbox verified' : 'no bbox'}</span>
+      <div class="citation-status">${badgeHtml}</div>
     `;
     chip.onclick = () => {
-      openSourceViewer(c, chip);
+      // Deselect other chips, select this one
+      block.querySelectorAll('.citation-chip').forEach(ch => ch.classList.remove('selected'));
+      chip.classList.add('selected');
+      // Open source viewer with this citation
+      openSourceViewer(c, i);
     };
     block.appendChild(chip);
   }
@@ -564,287 +772,9 @@ function renderCitations(citations) {
   scrollToBottom();
 }
 
-function citationStartPage(citation) {
-  if (Array.isArray(citation.pages) && citation.pages.length > 0) {
-    return citation.pages[0].page || citation.page || 1;
-  }
-  return citation.page || 1;
-}
-
-function setActiveCitationChip(chip) {
-  if (activeCitationChip) activeCitationChip.classList.remove('active');
-  activeCitationChip = chip || null;
-  if (activeCitationChip) activeCitationChip.classList.add('active');
-}
-
-function showSourceViewerState(state, message = '') {
-  sourceViewerEmpty.hidden = state !== 'empty';
-  sourceViewerLoading.hidden = state !== 'loading';
-  sourceViewerError.hidden = state !== 'error';
-  sourceViewerCanvasWrap.hidden = state !== 'canvas';
-
-  if (state === 'loading') sourceViewerLoading.textContent = message || 'Loading PDF…';
-  if (state === 'error') sourceViewerError.textContent = message || 'Failed to load source page.';
-  if (state === 'empty') sourceViewerEmpty.textContent = message || 'Click any citation chip to open the cited PDF page here.';
-}
-
-function currentCitationBoxes(pageNum) {
-  if (!viewerCitation) return [];
-  if (Array.isArray(viewerCitation.pages) && viewerCitation.pages.length > 0) {
-    return viewerCitation.pages.filter(p => p.page === pageNum);
-  }
-  if (viewerCitation.bbox && (viewerCitation.page || 1) === pageNum) {
-    return [viewerCitation.bbox];
-  }
-  return [];
-}
-
-function renderSourceHighlights(pageNum, pageWidth, pageHeight) {
-  const boxes = currentCitationBoxes(pageNum);
-  sourceViewerOverlay.setAttribute('viewBox', `0 0 ${pageWidth} ${pageHeight}`);
-  sourceViewerOverlay.innerHTML = boxes.map((box) =>
-    `<rect class="source-highlight" x="${box.x}" y="${box.y}" width="${box.width}" height="${box.height}" rx="4" ry="4"></rect>`
-  ).join('');
-}
-
-function updateSourceViewerNav() {
-  const total = viewerPdf?.numPages || 0;
-  sourceViewerPrevBtn.disabled = !viewerPdf || viewerPage <= 1;
-  sourceViewerNextBtn.disabled = !viewerPdf || viewerPage >= total;
-  sourceViewerPageIndicator.textContent = total > 0 ? `Page ${viewerPage} of ${total}` : 'Page —';
-}
-
-/** Preload PDFs in background when citations arrive so clicks are instant */
-const preloadedPdfs = {};
-function preloadCitationPdfs(citations) {
-  if (!window.pdfjsLib) return;
-  const files = [...new Set(citations.map(c => c.file))];
-  for (const file of files) {
-    if (preloadedPdfs[file]) continue;
-    const url = `/api/pdf/${encodeURIComponent(file)}`;
-    preloadedPdfs[file] = window.pdfjsLib.getDocument({ url }).promise.catch(() => null);
-  }
-}
-
-/** Cache bbox page data: bboxPageCache["file.pdf:3"] = pageData */
-const bboxPageCache = {};
-
-/** Client-side quote matching against bbox JSON to get accurate highlight */
-async function verifyCitationBbox(citation) {
-  try {
-    const pageNum = citation.page || 1;
-    const cacheKey = `${citation.file}:${pageNum}`;
-    let bboxData = bboxPageCache[cacheKey];
-    if (!bboxData) {
-      const res = await fetch(`/api/bbox/${encodeURIComponent(citation.file)}?page=${pageNum}`);
-      if (!res.ok) return;
-      bboxData = await res.json();
-      if (!bboxData.error) bboxPageCache[cacheKey] = bboxData;
-    }
-    if (bboxData.error) return;
-
-    const page = bboxData.pages?.find(p => p.page === citation.page);
-    if (!page || !page.textItems?.length) return;
-
-    // Build text run from textItems (same logic as server-side)
-    const Y_TOL = 3, X_GAP = 15;
-    const items = page.textItems.filter(t => t.text.trim().length > 0);
-    if (!items.length) return;
-
-    const sorted = [...items].sort((a, b) => {
-      const dy = a.y - b.y;
-      return Math.abs(dy) > Y_TOL ? dy : a.x - b.x;
-    });
-
-    // Group into lines
-    const lines = [];
-    let curLine = [sorted[0]], curY = sorted[0].y;
-    for (let i = 1; i < sorted.length; i++) {
-      if (Math.abs(sorted[i].y - curY) <= Y_TOL) {
-        curLine.push(sorted[i]);
-      } else {
-        lines.push(curLine);
-        curLine = [sorted[i]];
-        curY = sorted[i].y;
-      }
-    }
-    lines.push(curLine);
-    for (const line of lines) line.sort((a, b) => a.x - b.x);
-
-    // Concatenate with segments
-    let text = '';
-    const segments = [];
-    for (let li = 0; li < lines.length; li++) {
-      const line = lines[li];
-      for (let ii = 0; ii < line.length; ii++) {
-        const item = line[ii];
-        if (ii > 0) {
-          const prev = line[ii - 1];
-          const gap = item.x - (prev.x + prev.width);
-          text += gap > X_GAP ? '  ' : gap >= 0 ? ' ' : '';
-        }
-        const start = text.length;
-        text += item.text;
-        segments.push({ start, end: text.length, bbox: { x: item.x, y: item.y, width: item.width, height: item.height } });
-      }
-      if (li < lines.length - 1) text += '\n';
-    }
-
-    // Try exact match, then normalized
-    const quote = citation.quote;
-    let matchStart = -1, matchEnd = -1;
-
-    // Exact
-    const idx = text.indexOf(quote);
-    if (idx >= 0) { matchStart = idx; matchEnd = idx + quote.length; }
-
-    // Normalized
-    if (matchStart < 0) {
-      const norm = s => s.toLowerCase().replace(/[^\w\s]/g, '').replace(/\s+/g, ' ').trim();
-      const nHay = norm(text), nNeedle = norm(quote);
-      const nIdx = nHay.indexOf(nNeedle);
-      if (nIdx >= 0) {
-        // Map back to original positions
-        let nPos = 0, oStart = -1, oEnd = -1;
-        for (let i = 0; i < text.length && oEnd < 0; i++) {
-          const ch = text[i];
-          if (/\s/.test(ch)) {
-            let j = i;
-            while (j < text.length && /\s/.test(text[j])) j++;
-            if (nPos === nIdx) oStart = i;
-            nPos++;
-            if (nPos >= nIdx + nNeedle.length && oEnd < 0) oEnd = j;
-            i = j - 1;
-            continue;
-          }
-          if (/[^\w]/.test(ch)) continue;
-          if (nPos === nIdx) oStart = i;
-          nPos++;
-          if (nPos >= nIdx + nNeedle.length && oEnd < 0) oEnd = i + 1;
-        }
-        if (oStart >= 0 && oEnd > oStart) { matchStart = oStart; matchEnd = oEnd; }
-      }
-    }
-
-    if (matchStart < 0) return;
-
-    // Merge bboxes of matching segments
-    const boxes = segments.filter(s => s.end > matchStart && s.start < matchEnd).map(s => s.bbox);
-    if (!boxes.length) return;
-
-    let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity;
-    for (const b of boxes) {
-      if (b.x < minX) minX = b.x;
-      if (b.y < minY) minY = b.y;
-      if (b.x + b.width > maxX) maxX = b.x + b.width;
-      if (b.y + b.height > maxY) maxY = b.y + b.height;
-    }
-    citation.bbox = {
-      x: Math.round(minX * 100) / 100,
-      y: Math.round(minY * 100) / 100,
-      width: Math.round((maxX - minX) * 100) / 100,
-      height: Math.round((maxY - minY) * 100) / 100,
-    };
-  } catch (err) {
-    console.warn('[viewer] Citation bbox verification failed:', err);
-  }
-}
-
-async function openSourceViewer(citation, chip) {
-  setActiveCitationChip(chip);
-  viewerCitation = citation;
-  sourceViewerEl.classList.add('open');
-  sourceViewerEl.setAttribute('aria-hidden', 'false');
-  sourceViewerTitle.textContent = citation.file || 'Source Viewer';
-  sourceViewerMeta.textContent = `Loading page ${citationStartPage(citation)}…`;
-  showSourceViewerState('loading', 'Loading PDF…');
-
-  try {
-    if (!window.pdfjsLib) {
-      throw new Error('pdf.js did not load. Refresh and try again.');
-    }
-
-    // Verify bbox in parallel with PDF loading
-    const verifyPromise = verifyCitationBbox(citation);
-
-    if (!viewerPdf || viewerFile !== citation.file) {
-      // Use preloaded PDF if available, otherwise fetch now
-      if (preloadedPdfs[citation.file]) {
-        viewerPdf = await preloadedPdfs[citation.file];
-      }
-      if (!viewerPdf) {
-        const url = `/api/pdf/${encodeURIComponent(citation.file)}`;
-        viewerPdf = await window.pdfjsLib.getDocument({ url }).promise;
-      }
-      viewerFile = citation.file;
-    }
-
-    await verifyPromise;
-    viewerPage = Math.max(1, Math.min(citationStartPage(citation), viewerPdf.numPages || 1));
-    await new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve)));
-    await renderSourceViewerPage(viewerPage);
-  } catch (err) {
-    console.error('Source Viewer failed:', err);
-    showSourceViewerState('error', err?.message || 'Failed to load PDF.');
-    sourceViewerMeta.textContent = 'Source unavailable';
-    sourceViewerPageIndicator.textContent = 'Page —';
-    viewerPdf = null;
-    viewerFile = '';
-    updateSourceViewerNav();
-  }
-}
-
-async function renderSourceViewerPage(pageNum) {
-  if (!viewerPdf) return;
-
-  showSourceViewerState('loading', 'Rendering page…');
-  const page = await viewerPdf.getPage(pageNum);
-  const baseViewport = page.getViewport({ scale: 1 });
-  const availableWidth = Math.max(240, sourceViewerBody.clientWidth - 32);
-  const cssScale = availableWidth / baseViewport.width;
-  const viewport = page.getViewport({ scale: cssScale });
-  const outputScale = window.devicePixelRatio || 1;
-  const ctx = sourceViewerCanvas.getContext('2d');
-  if (!ctx) throw new Error('Could not get canvas context for PDF rendering.');
-
-  sourceViewerCanvas.width = Math.floor(viewport.width * outputScale);
-  sourceViewerCanvas.height = Math.floor(viewport.height * outputScale);
-  sourceViewerCanvas.style.width = `${viewport.width}px`;
-  sourceViewerCanvas.style.height = `${viewport.height}px`;
-  sourceViewerPageWrap.style.width = `${viewport.width}px`;
-  sourceViewerPageWrap.style.height = `${viewport.height}px`;
-
-  ctx.setTransform(1, 0, 0, 1, 0, 0);
-  ctx.clearRect(0, 0, sourceViewerCanvas.width, sourceViewerCanvas.height);
-
-  await page.render({
-    canvasContext: ctx,
-    viewport,
-    transform: outputScale !== 1 ? [outputScale, 0, 0, outputScale, 0, 0] : null,
-  }).promise;
-
-  viewerPage = pageNum;
-  renderSourceHighlights(pageNum, baseViewport.width, baseViewport.height);
-  const highlightCount = currentCitationBoxes(pageNum).length;
-  sourceViewerMeta.textContent = highlightCount > 0
-    ? `${viewerFile} · ${highlightCount} highlight${highlightCount !== 1 ? 's' : ''}`
-    : `${viewerFile} · no highlight on this page`;
-  showSourceViewerState('canvas');
-  updateSourceViewerNav();
-}
-
-function closeSourceViewer() {
-  sourceViewerEl.classList.remove('open');
-  sourceViewerEl.setAttribute('aria-hidden', 'true');
-  viewerCitation = null;
-  sourceViewerOverlay.innerHTML = '';
-  setActiveCitationChip(null);
-}
-
 function finishResponse(data) {
   if (!currentAssistant) return;
-  renderAllAnswers(); // final render of all segments
-  if (lastCitations.length > 0) linkInlineCitations(lastCitations);
+  renderAnswer();
   const done = document.createElement('div');
   done.className = 'msg-done';
   const parts = [`${data.elapsed}s`];
@@ -854,6 +784,10 @@ function finishResponse(data) {
   done.textContent = parts.join(' · ');
   currentAssistant.appendChild(done);
   scrollToBottom();
+  // Reload sessions list
+  loadSessions();
+  // Invalidate wiki cache so next wiki view is fresh
+  wikiLoaded = false;
 }
 
 function addSystemMessage(text) {
@@ -870,7 +804,148 @@ function scrollToBottom() {
   });
 }
 
-// ── Sessions ─────────────────────────────────────────────────
+// ── Source Viewer ─────────────────────────────────────────────
+async function openSourceViewer(citation, index) {
+  const viewer = document.getElementById('source-viewer');
+  const loading = document.getElementById('sv-loading');
+  const canvasWrap = document.getElementById('sv-canvas-wrap');
+
+  // Open the sheet
+  viewer.classList.add('open');
+  loading.style.display = 'flex';
+  canvasWrap.style.display = 'none';
+
+  const file = citation.file.replace(/\.md$/i, '.pdf');
+  const page = citation.page || 1;
+
+  // Set header
+  document.getElementById('sv-filename').textContent = file;
+  
+  // Collect highlights for this citation
+  svHighlights = [];
+  if (citation.bbox) {
+    svHighlights.push(citation.bbox);
+  }
+  if (citation.pages && citation.pages.length > 0) {
+    for (const pb of citation.pages) {
+      if (pb.page === page) {
+        svHighlights.push({ x: pb.x, y: pb.y, width: pb.width, height: pb.height });
+      }
+    }
+  }
+
+  try {
+    // Load PDF (cache it)
+    if (!pdfCache[file]) {
+      pdfCache[file] = await pdfjsLib.getDocument(`/api/pdf/${encodeURIComponent(file)}`).promise;
+    }
+    svPdfDoc = pdfCache[file];
+    svTotalPages = svPdfDoc.numPages;
+    svFilename = file;
+    svCurrentPage = Math.min(page, svTotalPages);
+    
+    await renderPdfPage(svCurrentPage);
+    loading.style.display = 'none';
+    canvasWrap.style.display = 'block';
+  } catch (err) {
+    console.error('Failed to load PDF:', err);
+    loading.innerHTML = `<span style="color:var(--urgent)">Failed to load PDF: ${escapeHtml(err.message || String(err))}</span>`;
+  }
+}
+
+async function renderPdfPage(pageNum) {
+  const canvas = document.getElementById('sv-canvas');
+  const svg = document.getElementById('sv-highlights');
+  const canvasWrap = document.getElementById('sv-canvas-wrap');
+
+  const page = await svPdfDoc.getPage(pageNum);
+
+  // Determine scale
+  let scale;
+  const bodyWidth = document.getElementById('sv-body').clientWidth - 32;
+  const vp1 = page.getViewport({ scale: 1 });
+
+  if (svZoom === 'fit') {
+    scale = Math.min((bodyWidth) / vp1.width, 2);
+  } else if (svZoom === '100') {
+    scale = 1;
+  } else {
+    scale = 2;
+  }
+
+  const viewport = page.getViewport({ scale });
+  canvas.width = viewport.width;
+  canvas.height = viewport.height;
+  canvas.style.width = viewport.width / (window.devicePixelRatio || 1) + 'px';
+  canvas.style.height = viewport.height / (window.devicePixelRatio || 1) + 'px';
+
+  await page.render({ canvasContext: canvas.getContext('2d'), viewport }).promise;
+
+  // SVG overlay — viewBox matches PDF point dimensions
+  svg.setAttribute('viewBox', `0 0 ${vp1.width} ${vp1.height}`);
+  svg.innerHTML = '';
+
+  for (const hl of svHighlights) {
+    if (!hl || !hl.width) continue;
+    const rect = document.createElementNS('http://www.w3.org/2000/svg', 'rect');
+    rect.setAttribute('x', hl.x);
+    rect.setAttribute('y', hl.y);
+    rect.setAttribute('width', hl.width);
+    rect.setAttribute('height', hl.height);
+    rect.setAttribute('fill', 'rgba(79, 45, 127, 0.15)');
+    rect.setAttribute('stroke', 'rgba(79, 45, 127, 0.5)');
+    rect.setAttribute('stroke-width', '1.5');
+    rect.setAttribute('rx', '2');
+    rect.classList.add('highlight-pulse');
+    svg.appendChild(rect);
+  }
+
+  // Update page info
+  document.getElementById('sv-page-label').textContent = `Page ${pageNum} of ${svTotalPages}`;
+  document.getElementById('sv-page-info').textContent = `${pageNum} / ${svTotalPages}`;
+  document.getElementById('sv-prev').disabled = pageNum <= 1;
+  document.getElementById('sv-next').disabled = pageNum >= svTotalPages;
+}
+
+function closeSourceViewer() {
+  document.getElementById('source-viewer').classList.remove('open');
+  // Deselect all citation chips
+  document.querySelectorAll('.citation-chip.selected').forEach(el => el.classList.remove('selected'));
+}
+
+// Source Viewer controls
+document.getElementById('sv-close').addEventListener('click', closeSourceViewer);
+document.addEventListener('keydown', (e) => {
+  if (e.key === 'Escape') closeSourceViewer();
+});
+
+document.getElementById('sv-prev').addEventListener('click', async () => {
+  if (svCurrentPage > 1) {
+    svCurrentPage--;
+    svHighlights = []; // Clear highlights when navigating away
+    await renderPdfPage(svCurrentPage);
+  }
+});
+
+document.getElementById('sv-next').addEventListener('click', async () => {
+  if (svCurrentPage < svTotalPages) {
+    svCurrentPage++;
+    svHighlights = []; // Clear highlights when navigating away
+    await renderPdfPage(svCurrentPage);
+  }
+});
+
+// Zoom controls
+document.querySelectorAll('.sv-zoom button').forEach(btn => {
+  btn.addEventListener('click', async () => {
+    document.querySelectorAll('.sv-zoom button').forEach(b => b.classList.remove('active'));
+    btn.classList.add('active');
+    svZoom = btn.dataset.zoom;
+    if (svPdfDoc) await renderPdfPage(svCurrentPage);
+  });
+});
+
+// ── Session History ──────────────────────────────────────────────
 async function loadSessions() {
   try {
     const res = await fetch('/api/sessions');
@@ -888,7 +963,131 @@ async function loadSessions() {
         <span class="meta">${ago} · ${s.citationCount} citations</span>
       </button>`;
     }).join('');
+
+    // Add click handlers for session restoration
+    list.querySelectorAll('.session-item').forEach(btn => {
+      btn.addEventListener('click', () => loadSession(btn.dataset.id));
+    });
   } catch (e) { console.error('Failed to load sessions:', e); }
+}
+
+async function loadSession(sessionId) {
+  try {
+    const res = await fetch(`/api/sessions/${sessionId}`);
+    if (!res.ok) return;
+    const trace = await res.json();
+
+    // Switch to chat tab
+    if (currentTab !== 'chat') switchTab('chat');
+
+    // Clear current messages
+    messagesEl.innerHTML = '';
+    closeSourceViewer();
+
+    // Highlight active session in sidebar
+    document.querySelectorAll('.session-item').forEach(el => {
+      el.classList.toggle('active', el.dataset.id === sessionId);
+    });
+
+    // Render the user question
+    if (trace.question) {
+      const userDiv = document.createElement('div');
+      userDiv.className = 'msg-user';
+      userDiv.innerHTML = `<div class="bubble">${escapeHtml(trace.question)}</div>`;
+      messagesEl.appendChild(userDiv);
+    }
+
+    // Render the assistant answer
+    if (trace.answer || trace.fullAnswer) {
+      const answer = trace.answer || trace.fullAnswer;
+      const assistDiv = document.createElement('div');
+      assistDiv.className = 'msg-assistant';
+      
+      const modelTag = trace.model || currentModel || 'unknown';
+      assistDiv.innerHTML = `<div class="msg-model font-mono">⟡ ${escapeHtml(modelTag)}</div>`;
+
+      // Render files read as tool cards
+      if (trace.filesRead && trace.filesRead.length > 0) {
+        for (const f of trace.filesRead) {
+          const tool = document.createElement('div');
+          tool.className = 'msg-tool';
+          tool.innerHTML = `<span class="tool-dot done"></span><span>Reading  ${escapeHtml(typeof f === 'string' ? f : f.file || f.name || '')}</span>`;
+          assistDiv.appendChild(tool);
+        }
+      }
+
+      // Render answer text
+      const ansDiv = document.createElement('div');
+      ansDiv.className = 'msg-answer';
+      // Strip CITATIONS block for display
+      let displayText = answer;
+      const citIdx = displayText.search(/^CITATIONS:\s*$/im);
+      if (citIdx >= 0) displayText = displayText.slice(0, citIdx).trimEnd();
+      try {
+        ansDiv.innerHTML = marked.parse(displayText);
+      } catch {
+        ansDiv.textContent = displayText;
+      }
+      assistDiv.appendChild(ansDiv);
+
+      // Render citations if available
+      if (trace.citations && trace.citations.length > 0) {
+        const citBlock = document.createElement('div');
+        citBlock.className = 'citations-block';
+        citBlock.innerHTML = '<div class="citations-label">Citations</div>';
+        
+        for (let i = 0; i < trace.citations.length; i++) {
+          const c = trace.citations[i];
+          const pageStr = c.pages ? `p.${c.pages.map(p => p.page).join('-')}` : `p.${c.page}`;
+          const hasBbox = c.bbox || (c.pages && c.pages.length > 0);
+          const quote = (c.quote || '').length > 70 ? c.quote.slice(0, 67) + '...' : (c.quote || '');
+
+          let badgeHtml;
+          if (hasBbox) {
+            badgeHtml = '<span class="badge badge-verified">✅ Verified</span>';
+          } else {
+            badgeHtml = '<span class="badge badge-nobbox">— No bbox</span>';
+          }
+
+          const chip = document.createElement('div');
+          chip.className = 'citation-chip';
+          chip.innerHTML = `
+            <div class="citation-row">
+              <span class="citation-num">[${i+1}]</span>
+              <span>📄</span>
+              <span class="citation-file">${escapeHtml(c.file)}</span>
+              <span class="citation-page">${pageStr}</span>
+            </div>
+            <span class="citation-quote">"${escapeHtml(quote)}"</span>
+            <div class="citation-status">${badgeHtml}</div>
+          `;
+          chip.onclick = () => {
+            citBlock.querySelectorAll('.citation-chip').forEach(ch => ch.classList.remove('selected'));
+            chip.classList.add('selected');
+            openSourceViewer(c, i);
+          };
+          citBlock.appendChild(chip);
+        }
+        assistDiv.appendChild(citBlock);
+      }
+
+      // Duration
+      if (trace.elapsed || trace.durationMs) {
+        const done = document.createElement('div');
+        done.className = 'msg-done';
+        const elapsed = trace.elapsed || (trace.durationMs / 1000).toFixed(1);
+        done.textContent = `${elapsed}s`;
+        assistDiv.appendChild(done);
+      }
+
+      messagesEl.appendChild(assistDiv);
+    }
+
+    scrollToBottom();
+  } catch (e) {
+    console.error('Failed to load session:', e);
+    addSystemMessage('Failed to load session details.');
+  }
 }
 
 async function loadStatus() {
@@ -900,28 +1099,7 @@ async function loadStatus() {
 }
 
 document.getElementById('new-chat-btn').addEventListener('click', () => {
-  // Reload page to start fresh session
   location.reload();
-});
-
-sourceViewerCloseBtn.addEventListener('click', closeSourceViewer);
-sourceViewerPrevBtn.addEventListener('click', () => {
-  if (viewerPdf && viewerPage > 1) renderSourceViewerPage(viewerPage - 1);
-});
-sourceViewerNextBtn.addEventListener('click', () => {
-  if (viewerPdf && viewerPage < viewerPdf.numPages) renderSourceViewerPage(viewerPage + 1);
-});
-window.addEventListener('keydown', (e) => {
-  if (e.key === 'Escape' && sourceViewerEl.classList.contains('open')) {
-    closeSourceViewer();
-  }
-});
-window.addEventListener('resize', () => {
-  if (!viewerPdf || !sourceViewerEl.classList.contains('open')) return;
-  clearTimeout(resizeTimer);
-  resizeTimer = setTimeout(() => {
-    renderSourceViewerPage(viewerPage).catch((err) => console.error('Resize rerender failed:', err));
-  }, 120);
 });
 
 // ── Helpers ──────────────────────────────────────────────────
@@ -938,8 +1116,403 @@ function timeAgo(date) {
 }
 
 function escapeHtml(s) {
+  if (!s) return '';
   return s.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
 }
+
+// ── Knowledge Graph ─────────────────────────────────────────────
+let graphLoaded = false;
+let graphData = null;
+
+async function loadGraph() {
+  if (graphLoaded) return;
+  try {
+    const res = await fetch('/api/wiki');
+    const data = await res.json();
+    if (!data.content || !data.content.trim()) {
+      document.getElementById('graph-canvas').innerHTML = '<div style="display:flex;align-items:center;justify-content:center;height:100%;color:var(--mid);font-size:14px;">No wiki data yet. Ask some questions first to build the knowledge graph.</div>';
+      return;
+    }
+    graphData = parseWikiToGraph(data.content);
+    renderGraph(graphData);
+    graphLoaded = true;
+
+    // Stats
+    document.getElementById('graph-stats').textContent = `${graphData.nodes.length} concepts · ${graphData.links.length} connections`;
+  } catch (e) {
+    console.error('Failed to load graph:', e);
+    document.getElementById('graph-canvas').innerHTML = '<div style="display:flex;align-items:center;justify-content:center;height:100%;color:var(--urgent);font-size:14px;">Failed to load wiki data for graph.</div>';
+  }
+}
+
+function parseWikiToGraph(wikiContent) {
+  const nodes = [];
+  const links = [];
+  const nodeMap = new Map();
+
+  // Split wiki content by H2 headers → each is a concept
+  const sections = wikiContent.split(/^## /m).filter(s => s.trim());
+
+  for (const section of sections) {
+    const lines = section.split('\n');
+    const titleLine = lines[0].trim();
+    if (!titleLine || titleLine.startsWith('#')) continue; // Skip H1 or empty
+
+    const title = titleLine.replace(/\*+/g, '').trim();
+    if (!title) continue;
+
+    const body = lines.slice(1).join('\n');
+
+    // Extract backlinks [[like this]]
+    const backlinkMatches = body.match(/\[\[([^\]]+)\]\]/g) || [];
+    const backlinks = backlinkMatches.map(m => m.replace(/[\[\]]/g, '').trim());
+
+    // Extract source files mentioned
+    const sourceMatches = body.match(/Sources?:\s*([^·\n]+)/gi) || [];
+    const sources = sourceMatches.flatMap(m => {
+      return m.replace(/Sources?:\s*/i, '').split(',').map(s => s.trim().replace(/\s*\([^)]*\)/g, '')).filter(Boolean);
+    });
+
+    // Extract user queries
+    const queryMatches = body.match(/User query:\s*"([^"]+)"/gi) || [];
+    const queries = queryMatches.map(m => m.replace(/User query:\s*"/i, '').replace(/"$/, '').trim()).filter(Boolean);
+
+    // Get a short excerpt for the tooltip
+    const excerpt = body.replace(/\[\[[^\]]+\]\]/g, '').replace(/\*[^*]+\*/g, '').trim().split('\n').filter(l => l.trim() && !l.startsWith('*') && !l.startsWith('See also')).slice(0, 2).join(' ').slice(0, 120);
+
+    if (!nodeMap.has(title)) {
+      nodeMap.set(title, { id: title, type: 'concept', excerpt, connections: 0 });
+    }
+
+    // Create links for backlinks
+    for (const bl of backlinks) {
+      if (!nodeMap.has(bl)) {
+        nodeMap.set(bl, { id: bl, type: 'concept', excerpt: '', connections: 0 });
+      }
+      links.push({ source: title, target: bl });
+      nodeMap.get(title).connections++;
+      nodeMap.get(bl).connections++;
+    }
+
+    // Create links for sources
+    for (const src of sources) {
+      const srcName = src.replace(/\.md$/i, '');
+      if (!srcName) continue;
+      if (!nodeMap.has(srcName)) {
+        nodeMap.set(srcName, { id: srcName, type: 'source', excerpt: 'Source document', connections: 0 });
+      }
+      links.push({ source: title, target: srcName });
+      nodeMap.get(title).connections++;
+      nodeMap.get(srcName).connections++;
+    }
+
+    // Create links for queries
+    for (const q of queries) {
+      if (!nodeMap.has(q)) {
+        nodeMap.set(q, { id: q, type: 'query', excerpt: 'User query related to this concept', connections: 0 });
+      }
+      links.push({ source: title, target: q });
+      nodeMap.get(title).connections++;
+      nodeMap.get(q).connections++;
+    }
+  }
+
+  // Convert map to array
+  for (const [, node] of nodeMap) {
+    nodes.push(node);
+  }
+
+  return { nodes, links };
+}
+
+function renderGraph(data) {
+  const container = document.getElementById('graph-canvas');
+  container.innerHTML = '';
+  const tooltip = document.getElementById('graph-tooltip');
+
+  const width = container.clientWidth;
+  const height = container.clientHeight;
+
+  const svg = d3.select(container)
+    .append('svg')
+    .attr('width', width)
+    .attr('height', height)
+    .attr('viewBox', [0, 0, width, height]);
+
+  // Gradient defs & Markers
+  const defs = svg.append('defs');
+  const gradient = defs.append('linearGradient')
+    .attr('id', 'link-gradient')
+    .attr('gradientUnits', 'userSpaceOnUse');
+  gradient.append('stop').attr('offset', '0%').attr('stop-color', 'var(--purple)').attr('stop-opacity', 0.3);
+  gradient.append('stop').attr('offset', '100%').attr('stop-color', 'var(--teal)').attr('stop-opacity', 0.3);
+
+  defs.append('marker')
+    .attr('id', 'arrow')
+    .attr('viewBox', '0 -4 8 8')
+    .attr('refX', 20) // approximate offset for nodes
+    .attr('refY', 0)
+    .attr('markerWidth', 6)
+    .attr('markerHeight', 6)
+    .attr('orient', 'auto')
+    .append('path')
+    .attr('d', 'M0,-3L6,0L0,3')
+    .attr('fill', 'var(--mid-light)');
+
+  // Zoom group
+  const g = svg.append('g');
+  const zoom = d3.zoom()
+    .scaleExtent([0.2, 5])
+    .on('zoom', (event) => g.attr('transform', event.transform));
+  svg.call(zoom);
+
+  // Force simulation
+  const simulation = d3.forceSimulation(data.nodes)
+    .force('link', d3.forceLink(data.links).id(d => d.id).distance(100))
+    .force('charge', d3.forceManyBody().strength(-250))
+    .force('center', d3.forceCenter(width / 2, height / 2))
+    .force('x', d3.forceX(width / 2).strength(0.05))
+    .force('y', d3.forceY(height / 2).strength(0.05))
+    .force('collision', d3.forceCollide().radius(d => nodeRadius(d) + 8));
+
+  // Links
+  const link = g.append('g')
+    .selectAll('line')
+    .data(data.links)
+    .join('line')
+    .attr('stroke', 'var(--mid-light)')
+    .attr('stroke-width', 1.5)
+    .attr('stroke-opacity', 0.4)
+    .attr('marker-end', 'url(#arrow)');
+
+  // Nodes
+  const node = g.append('g')
+    .selectAll('g')
+    .data(data.nodes)
+    .join('g')
+    .call(d3.drag()
+      .on('start', dragStarted)
+      .on('drag', dragged)
+      .on('end', dragEnded));
+
+  // Node Shapes (Square for source, Circle for concepts)
+  node.each(function(d) {
+    if (d.type === 'source') {
+      d3.select(this).append('rect')
+        .attr('width', nodeRadius(d) * 1.8)
+        .attr('height', nodeRadius(d) * 1.8)
+        .attr('x', -nodeRadius(d) * 0.9)
+        .attr('y', -nodeRadius(d) * 0.9)
+        .attr('rx', 4)
+        .attr('fill', 'var(--teal)')
+        .attr('fill-opacity', 0.85)
+        .attr('stroke', 'rgba(13,125,133,0.4)')
+        .attr('stroke-width', 2)
+        .style('cursor', 'pointer');
+    } else if (d.type === 'query') {
+      d3.select(this).append('rect')
+        .attr('width', nodeRadius(d) * 1.5)
+        .attr('height', nodeRadius(d) * 1.5)
+        .attr('x', -nodeRadius(d) * 0.75)
+        .attr('y', -nodeRadius(d) * 0.75)
+        .attr('rx', 2)
+        .attr('fill', 'var(--warn)')
+        .attr('fill-opacity', 0.85)
+        .attr('stroke', 'rgba(184,122,0,0.4)')
+        .attr('stroke-width', 2)
+        .attr('transform', 'rotate(45)')
+        .style('cursor', 'pointer');
+    } else {
+      d3.select(this).append('circle')
+        .attr('r', nodeRadius(d))
+        .attr('fill', 'var(--purple)')
+        .attr('fill-opacity', 0.85)
+        .attr('stroke', 'rgba(79,45,127,0.4)')
+        .attr('stroke-width', 2)
+        .style('cursor', 'pointer');
+    }
+  });
+
+  // Node labels (Halo for readability)
+  node.append('text')
+    .text(d => d.id.length > 20 ? d.id.slice(0, 18) + '…' : d.id)
+    .attr('x', d => nodeRadius(d) + 8)
+    .attr('y', 4)
+    .attr('font-size', '11px')
+    .attr('font-family', 'Instrument Sans, system-ui, sans-serif')
+    .attr('font-weight', d => d.connections > 3 ? '600' : '400')
+    .attr('stroke', 'var(--paper)')
+    .attr('stroke-width', 3)
+    .attr('stroke-linejoin', 'round')
+    .style('pointer-events', 'none');
+
+  // Node labels (Foreground)
+  node.append('text')
+    .text(d => d.id.length > 20 ? d.id.slice(0, 18) + '…' : d.id)
+    .attr('x', d => nodeRadius(d) + 8)
+    .attr('y', 4)
+    .attr('font-size', '11px')
+    .attr('font-family', 'Instrument Sans, system-ui, sans-serif')
+    .attr('fill', 'var(--ink-soft)')
+    .attr('font-weight', d => d.connections > 3 ? '600' : '400')
+    .style('pointer-events', 'none');
+
+  // Hover effects
+  node.on('mouseenter', (event, d) => {
+    // Highlight connected nodes and links
+    const connected = new Set();
+    data.links.forEach(l => {
+      const sid = typeof l.source === 'object' ? l.source.id : l.source;
+      const tid = typeof l.target === 'object' ? l.target.id : l.target;
+      if (sid === d.id) connected.add(tid);
+      if (tid === d.id) connected.add(sid);
+    });
+    connected.add(d.id);
+
+    node.selectAll('circle, rect')
+      .attr('fill-opacity', n => connected.has(n.id) ? 1 : 0.15);
+    node.selectAll('text')
+      .attr('fill-opacity', n => connected.has(n.id) ? 1 : 0.2);
+    link
+      .attr('stroke-opacity', l => {
+        const sid = typeof l.source === 'object' ? l.source.id : l.source;
+        const tid = typeof l.target === 'object' ? l.target.id : l.target;
+        return (sid === d.id || tid === d.id) ? 0.8 : 0.05;
+      })
+      .attr('stroke-width', l => {
+        const sid = typeof l.source === 'object' ? l.source.id : l.source;
+        const tid = typeof l.target === 'object' ? l.target.id : l.target;
+        return (sid === d.id || tid === d.id) ? 2 : 1;
+      })
+      .attr('stroke', l => {
+        const sid = typeof l.source === 'object' ? l.source.id : l.source;
+        const tid = typeof l.target === 'object' ? l.target.id : l.target;
+        return (sid === d.id || tid === d.id) ? 'var(--purple-soft)' : 'var(--mid-light)';
+      });
+
+    // Tooltip
+    tooltip.innerHTML = `<div class="tt-title">${escapeHtml(d.id)}</div>${d.excerpt ? `<div style="margin-top:3px;font-size:11px;color:rgba(255,255,255,0.7);">${escapeHtml(d.excerpt)}</div>` : ''}<div class="tt-connections">${d.connections} connection${d.connections !== 1 ? 's' : ''} · ${d.type}</div>`;
+    tooltip.classList.add('show');
+    const rect = container.getBoundingClientRect();
+    tooltip.style.left = (event.pageX - rect.left + 16) + 'px';
+    tooltip.style.top = (event.pageY - rect.top - 10) + 'px';
+  });
+
+  node.on('mousemove', (event) => {
+    const rect = container.getBoundingClientRect();
+    tooltip.style.left = (event.pageX - rect.left + 16) + 'px';
+    tooltip.style.top = (event.pageY - rect.top - 10) + 'px';
+  });
+
+  node.on('mouseleave', () => {
+    node.selectAll('circle, rect').attr('fill-opacity', 0.85);
+    node.selectAll('text').attr('fill-opacity', 1);
+    link.attr('stroke-opacity', 0.5).attr('stroke-width', 1).attr('stroke', 'var(--mid-light)');
+    tooltip.classList.remove('show');
+  });
+
+  // Double click to zoom to node
+  node.on('dblclick', (event, d) => {
+    event.stopPropagation();
+    const scale = 2;
+    const x = width / 2 - d.x * scale;
+    const y = height / 2 - d.y * scale;
+    svg.transition().duration(600)
+      .call(zoom.transform, d3.zoomIdentity.translate(x, y).scale(scale));
+  });
+
+  // Tick
+  simulation.on('tick', () => {
+    link
+      .attr('x1', d => d.source.x)
+      .attr('y1', d => d.source.y)
+      .attr('x2', d => d.target.x)
+      .attr('y2', d => d.target.y);
+    node.attr('transform', d => `translate(${d.x},${d.y})`);
+  });
+
+  function dragStarted(event, d) {
+    if (!event.active) simulation.alphaTarget(0.3).restart();
+    d.fx = d.x; d.fy = d.y;
+  }
+  function dragged(event, d) {
+    d.fx = event.x; d.fy = event.y;
+  }
+  function dragEnded(event, d) {
+    if (!event.active) simulation.alphaTarget(0);
+    d.fx = null; d.fy = null;
+  }
+
+  function nodeRadius(d) {
+    return Math.max(6, Math.min(22, 6 + d.connections * 2.5));
+  }
+
+  // Search filter
+  const searchInput = document.getElementById('graph-search');
+  searchInput.addEventListener('input', () => {
+    const query = searchInput.value.toLowerCase().trim();
+    if (!query) {
+      node.select('circle').attr('fill-opacity', 0.85);
+      node.select('text').attr('fill-opacity', 1);
+      link.attr('stroke-opacity', 0.5);
+      return;
+    }
+    const matchIds = new Set();
+    data.nodes.forEach(n => {
+      if (n.id.toLowerCase().includes(query)) matchIds.add(n.id);
+    });
+    // Also show connected nodes
+    const extended = new Set(matchIds);
+    data.links.forEach(l => {
+      const sid = typeof l.source === 'object' ? l.source.id : l.source;
+      const tid = typeof l.target === 'object' ? l.target.id : l.target;
+      if (matchIds.has(sid)) extended.add(tid);
+      if (matchIds.has(tid)) extended.add(sid);
+    });
+
+    node.select('circle').attr('fill-opacity', n => matchIds.has(n.id) ? 1 : extended.has(n.id) ? 0.5 : 0.08);
+    node.select('text').attr('fill-opacity', n => extended.has(n.id) ? 1 : 0.1);
+    link.attr('stroke-opacity', l => {
+      const sid = typeof l.source === 'object' ? l.source.id : l.source;
+      const tid = typeof l.target === 'object' ? l.target.id : l.target;
+      return (matchIds.has(sid) || matchIds.has(tid)) ? 0.7 : 0.03;
+    });
+  });
+
+  // Handle resize
+  const resizeObserver = new ResizeObserver(() => {
+    const w = container.clientWidth;
+    const h = container.clientHeight;
+    svg.attr('width', w).attr('height', h).attr('viewBox', [0, 0, w, h]);
+    simulation
+      .force('center', d3.forceCenter(w / 2, h / 2))
+      .force('x', d3.forceX(w / 2).strength(0.05))
+      .force('y', d3.forceY(h / 2).strength(0.05))
+      .alpha(0.3).restart();
+  });
+  resizeObserver.observe(container);
+}
+
+// ── Dark Mode ────────────────────────────────────────────────────
+const themeToggle = document.getElementById('theme-toggle');
+function setTheme(dark) {
+  document.documentElement.setAttribute('data-theme', dark ? 'dark' : 'light');
+  themeToggle.textContent = dark ? '☀️' : '🌙';
+  localStorage.setItem('llmkb-theme', dark ? 'dark' : 'light');
+  // Re-render graph if visible (D3 reads CSS variables live)
+  if (currentTab === 'graph' && graphLoaded) {
+    graphLoaded = false;
+    loadGraph();
+  }
+}
+// Init theme from localStorage or system preference
+const saved = localStorage.getItem('llmkb-theme');
+const prefersDark = saved ? saved === 'dark' : window.matchMedia('(prefers-color-scheme: dark)').matches;
+if (prefersDark) setTheme(true);
+themeToggle.addEventListener('click', () => {
+  const isDark = document.documentElement.getAttribute('data-theme') === 'dark';
+  setTheme(!isDark);
+});
 
 // ── Init ─────────────────────────────────────────────────────
 connectWS();

@@ -1,75 +1,34 @@
 # llm-kb
 
-Drop files into a folder. Build a knowledge base you can query — with a self-improving wiki that gets smarter every time you ask.
+Drop files into a folder. Get a knowledge base you can query — with a self-improving wiki that gets smarter every time you ask.
 
 Inspired by [Karpathy's LLM Knowledge Bases](https://x.com/karpathy/status/2039805659525644595) and [Farzapedia](https://x.com/FarzaTV).
-
-![llm-kb demo](./assets/llm-kb-demo-hq.gif)
-
-**Demo:** browser UI with streamed answers, clickable citations, and source-highlighted PDFs.
-
-[Download the short MP4 demo](./assets/llm-kb-demo-short.mp4)
-
-Every query leaves traces. `llm-kb eval` turns those traces into better behavior.
-
-**Example:** “Compare Apple and Microsoft revenue in 2022 with citation” → get an answer with clickable citations that open highlighted source pages.
-
-![llm-kb split view screenshot](./assets/llm-kb-split-view.png)
 
 ## Quick Start
 
 ```bash
 npm install -g llm-kb
-llm-kb run ./my-documents   # builds .llm-kb and opens terminal chat
-llm-kb ui ./my-documents    # opens browser UI using the built knowledge base
+llm-kb run ./my-documents
 ```
 
-- First run `llm-kb run` once to scan files, parse sources, build `.llm-kb/`, and open the terminal workflow.
-- Then open `llm-kb ui` anytime you want the browser experience with citation chips, session history, wiki view, and source inspection.
-
-Recommended flow:
-1. Drop PDFs and docs into a folder
-2. Run `llm-kb run ./my-documents` once to build `.llm-kb/`
-3. Open `llm-kb ui ./my-documents` whenever you want the browser UI
-4. Ask a question
-5. Click a citation to jump to the source page and inspect the highlighted evidence
-
-## Why this is different
-
-Most document chat tools stop at “answer with a citation.” `llm-kb` goes further:
-
-- **Grounded answers** — responses are built from parsed local source files, not just vague retrieval snippets
-- **Concept wiki** — every query compounds into a reusable wiki that speeds up future questions
-- **Inspectable evidence** — click a citation and open the original PDF with the cited region highlighted
-- **Two interfaces** — use the terminal for fast research loops and the browser UI when you want richer navigation
-- **Self-improving behavior** — session traces + eval tighten file selection, citations, and wiki coverage over time
+That's it. PDFs get parsed, an index is built, and an interactive chat opens — ready for questions.
 
 ## Authentication
 
-Use any one of these:
+Two options (you need one):
 
-**Option 1 — OpenRouter API key (recommended)**
-```bash
-export OPENROUTER_API_KEY=sk-or-...
-```
-
-**Option 2 — Pi SDK**
+**Option 1 — Pi SDK (recommended)**
 ```bash
 npm install -g @mariozechner/pi-coding-agent
 pi   # run once to authenticate
 ```
 
-**Option 3 — Anthropic API key**
+**Option 2 — Anthropic API key**
 ```bash
 export ANTHROPIC_API_KEY=sk-ant-...
 ```
 
-**Option 4 — OpenAI API key**
-```bash
-export OPENAI_API_KEY=sk-...
-```
-
-If none is configured, `llm-kb` shows a clear error with setup instructions.
+If neither is configured, `llm-kb` shows a clear error with setup instructions.
 
 ## What It Does
 
@@ -80,7 +39,7 @@ llm-kb run ./my-documents
 ```
 
 ```
-llm-kb v0.6.0
+llm-kb v0.5.0
 
 Scanning ./my-documents...
   Found 9 files (9 PDF)
@@ -117,25 +76,8 @@ Revenue grew 12% QoQ driven by...
 2. **Parses** — PDFs converted to markdown + bounding boxes via [LiteParse](https://github.com/run-llama/liteparse)
 3. **Indexes** — Haiku reads sources, writes `index.md` with summary table
 4. **Watches** — drop new files while running, they get parsed and indexed automatically
-5. **Chats** — interactive TUI with markdown rendering, thinking display, and tool-call progress
-6. **Learns** — every answer updates a concept-organized wiki; repeated questions can be answered instantly from cache
-
-### Web UI — ask, click citations, inspect evidence
-
-```bash
-llm-kb ui ./my-documents
-```
-
-The browser UI makes the grounding loop obvious:
-
-- **Streamed chat** with model/status display
-- **Session history** in the sidebar
-- **Wiki tab** for accumulated knowledge
-- **Citation chips** under each answer
-- **Click citation → open source viewer**
-- **Split view PDF inspection** with bounding-box highlights on the cited page
-
-If a response cites `[1] Annual Report.pdf, p.12`, you can click that citation and immediately inspect the matching source page instead of trusting the model blindly.
+5. **Chat** — interactive TUI with Pi-style markdown rendering, thinking display, tool call progress
+6. **Learns** — every answer updates a concept-organized wiki; repeated questions answered instantly from cache
 
 ### Continuous conversation
 
@@ -188,7 +130,7 @@ llm-kb eval
   Report: .llm-kb/wiki/outputs/eval-report.md
 ```
 
-`llm-kb eval` reads your session files and uses Haiku as a judge to find:
+Eval reads your session files and uses Haiku as a judge to find:
 
 | Check | What it catches |
 |---|---|
@@ -198,7 +140,7 @@ llm-kb eval
 | **Wasted reads** | Files read but never cited in the answer |
 | **Performance** | Wiki hit rate, avg duration, most-read files |
 
-The eval report includes actionable recommendations and updates `.llm-kb/guidelines.md` — learned rules the agent reads on demand during queries. You can also add your own rules to that file (see [Guidelines](#guidelines) below).
+The eval report includes actionable recommendations and updates `.llm-kb/guidelines.md` — learned rules the agent reads on-demand during queries. You can also add your own rules to this file (see [Guidelines](#guidelines) below).
 
 ### Status — KB overview
 
@@ -214,7 +156,7 @@ Knowledge Base Status
   Articles: 15 compiled
   Outputs: 2 saved answers
   Models:  claude-sonnet-4-6 (query)  claude-haiku-4-5 (index)
-  Auth:    OpenRouter
+  Auth:    Pi SDK
 ```
 
 ## The Three-Layer Architecture
@@ -254,7 +196,7 @@ The system separates **how to behave**, **what to know**, and **what went wrong*
 | Behaviour | `guidelines.md` | After eval / by you | Eval + user |
 | Knowledge | `wiki.md` | After every query | Wiki updater |
 
-The agent sees `AGENTS.md` in its system prompt (lean, stable). It reads `guidelines.md` and `wiki.md` on demand via tool calls — progressive disclosure, not context bloat.
+The agent sees AGENTS.md in its system prompt (lean, stable). It reads `guidelines.md` and `wiki.md` on-demand via tool calls — progressive disclosure, not context bloat.
 
 ## The Data Flywheel
 
@@ -337,7 +279,7 @@ Auto-generated at `.llm-kb/config.json`:
 | Eval judge | Haiku | Checking quality — cheap, fast |
 | Query | Sonnet | Complex reasoning, citations — needs strength |
 
-Override with environment variables:
+Override with env vars:
 ```bash
 LLM_KB_INDEX_MODEL=claude-haiku-4-5 llm-kb run ./docs
 LLM_KB_QUERY_MODEL=claude-sonnet-4-6 llm-kb query "question"
@@ -345,7 +287,7 @@ LLM_KB_QUERY_MODEL=claude-sonnet-4-6 llm-kb query "question"
 
 ## Non-PDF Files
 
-PDFs are parsed at scan time. Other file types are read on demand by the agent using bash scripts:
+PDFs are parsed at scan time. Other file types are read dynamically by the agent using bash scripts:
 
 | File type | How it's read |
 |---|---|
@@ -355,7 +297,7 @@ PDFs are parsed at scan time. Other file types are read on demand by the agent u
 | `.pptx` | Text extraction via `officeparser` |
 | `.md`, `.txt`, `.csv` | Read directly |
 
-For large files, the agent reads the structure first, then extracts only the sections relevant to the question — it never dumps the entire file.
+For large files, the agent reads the structure first, then extracts only the sections relevant to the question — never dumps the entire file.
 
 ## OCR for Scanned PDFs
 
@@ -368,7 +310,7 @@ OCR_SERVER_URL="http://localhost:8080/ocr?key=KEY" llm-kb run .  # remote Azure 
 
 ## Guidelines
 
-`guidelines.md` is the agent’s learned behavior file. Eval writes the `## Eval Insights` section automatically. You can add your own rules below it — eval will never overwrite them.
+`guidelines.md` is the agent’s learned behaviour file. Eval writes the `## Eval Insights` section automatically. You can add your own rules below it — eval will never overwrite them.
 
 ```markdown
 ## Eval Insights (auto-generated 2026-04-07)
@@ -391,7 +333,7 @@ OCR_SERVER_URL="http://localhost:8080/ocr?key=KEY" llm-kb run .  # remote Azure 
 - For aviation leases: always check both lessee and lessor obligations
 ```
 
-The agent reads this file on demand — not on every query. It consults guidelines when unsure about citation accuracy, file selection, or when a question touches a topic that had issues before. This keeps the system prompt lean while making learned behavior available when it matters.
+The agent reads this file on-demand — not on every query. It consults guidelines when unsure about citation accuracy, file selection, or when a question touches a topic that had issues before. This keeps the system prompt lean while making learned behaviour available when it matters.
 
 You can create `guidelines.md` manually before ever running eval. The agent will find it.
 
@@ -418,11 +360,9 @@ You can create `guidelines.md` manually before ever running eval. The agent will
 
 Your original files are never modified. Delete `.llm-kb/` to start fresh.
 
-## Interfaces
+## Display
 
-### Terminal UI
-
-The interactive TUI (via `@mariozechner/pi-tui`) uses a clear, phase-based display:
+The interactive TUI (via `@mariozechner/pi-tui`) shows the Claude Web UI pattern:
 
 | Phase | What you see |
 |---|---|
@@ -434,18 +374,8 @@ The interactive TUI (via `@mariozechner/pi-tui`) uses a clear, phase-based displ
 
 Phases can interleave: think → read files → answer → think again → read more → continue answer.
 
-The `llm-kb query` command uses stdout mode — same phases, but script-friendly for pipes and automation.
+The `llm-kb query` command uses stdout mode — same phases, works with pipes and scripts.
 
-### Browser UI
-
-`llm-kb ui ./my-documents` opens a browser-based research interface with:
-
-- chat + streaming answers
-- session history
-- wiki browsing
-- citation chips
-- source viewer for original PDFs
-- click-to-highlight evidence on cited pages
 
 ## Development
 
@@ -456,7 +386,7 @@ npm install
 npm run build
 npm link
 
-npm test              # 58 tests
+npm test              # 42 tests
 npm run test:watch    # vitest watch mode
 
 llm-kb run ./test-folder
